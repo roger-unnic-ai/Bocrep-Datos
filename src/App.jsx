@@ -85,6 +85,129 @@ const SCHEMAS = {
 
 const CASCADE = ["productes", "recepta", "farcit", "linies", "flux"];
 
+/* ══════════════════════════════════════════════════════════════
+   ENTITY RESOLUTION — normalitza noms proposats contra la BD
+   ══════════════════════════════════════════════════════════════ */
+
+const normalizeStr = s =>
+  String(s || '').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+
+const singularize = s => {
+  if (s.endsWith('es') && s.length > 4) return s.slice(0, -2)
+  if (s.endsWith('s') && s.length > 3) return s.slice(0, -1)
+  return s
+}
+
+const levenshtein = (a, b) => {
+  if (Math.abs(a.length - b.length) > 3) return 99
+  const m = a.length, n = b.length
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0)
+  )
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+  return dp[m][n]
+}
+
+const fuzzyMatch = (a, b) => {
+  const na = normalizeStr(a), nb = normalizeStr(b)
+  if (!na || !nb) return false
+  if (na === nb) return true
+  if (singularize(na) === singularize(nb)) return true
+  if (na.length >= 4 && nb.length >= 4 && levenshtein(na, nb) <= 2) return true
+  return false
+}
+
+// Taules que defineixen entitats i les taules que les referencien
+const ENTITY_DEFS = [
+  {
+    table: 'productes', keyField: 'producte',
+    refs: [{ table: 'recepta', field: 'producte' }, { table: 'flux', field: 'producte' }],
+  },
+  {
+    table: 'linies', keyField: 'linia',
+    refs: [{ table: 'flux', field: 'linia' }],
+  },
+  {
+    table: 'farcit', keyField: 'codi_nom_mp',
+    refs: [],
+  },
+]
+
+// Taules secundàries: com detectar si una fila ja existeix
+const SECONDARY_CHECKS = [
+  {
+    table: 'recepta',
+    matchFn: (row, existing) => fuzzyMatch(row.producte, existing.producte),
+  },
+  {
+    table: 'flux',
+    matchFn: (row, existing) =>
+      fuzzyMatch(row.producte, existing.producte) && String(row.dia) === String(existing.dia),
+  },
+]
+
+function resolveCanonicalNames(parsed, dbData) {
+  const resolved = JSON.parse(JSON.stringify(parsed))
+  const changeLog = [] // { from, to, table }
+
+  for (const { table, keyField, refs } of ENTITY_DEFS) {
+    const existing = dbData[table] || []
+    const mapping = {} // normalizeStr(proposedVal) → { canonical, existingId }
+
+    if (resolved[table]?.length) {
+      resolved[table] = resolved[table].map(row => {
+        const val = row[keyField]
+        if (!val) return { ...row, _action: 'insert', _existingId: null }
+
+        const match = existing.find(e => fuzzyMatch(val, e[keyField]))
+        if (match) {
+          const canonical = match[keyField]
+          if (normalizeStr(canonical) !== normalizeStr(val)) {
+            changeLog.push({ from: val, to: canonical, table })
+          }
+          mapping[normalizeStr(val)] = { canonical, existingId: match.id }
+          return { ...row, [keyField]: canonical, _action: 'update', _existingId: match.id }
+        }
+        mapping[normalizeStr(val)] = { canonical: val, existingId: null }
+        return { ...row, _action: 'insert', _existingId: null }
+      })
+    }
+
+    // Propaga el nom canònic a les taules que el referencien
+    for (const ref of refs) {
+      if (!resolved[ref.table]?.length) continue
+      resolved[ref.table] = resolved[ref.table].map(row => {
+        const refVal = row[ref.field]
+        if (!refVal) return row
+        const mapped = mapping[normalizeStr(refVal)]
+        if (mapped) return { ...row, [ref.field]: mapped.canonical }
+        const directMatch = existing.find(e => fuzzyMatch(refVal, e[keyField]))
+        if (directMatch) return { ...row, [ref.field]: directMatch[keyField] }
+        return row
+      })
+    }
+  }
+
+  // Marca les files de taules secundàries com a insert o update
+  for (const { table, matchFn } of SECONDARY_CHECKS) {
+    if (!resolved[table]?.length) continue
+    resolved[table] = resolved[table].map(row => {
+      if (row._action) return row
+      const match = (dbData[table] || []).find(e => matchFn(row, e))
+      if (match) return { ...row, _action: 'update', _existingId: match.id }
+      return { ...row, _action: 'insert', _existingId: null }
+    })
+  }
+
+  return { resolved, changeLog }
+}
+
 const SYS_PROMPT = `Ets un assistent expert en producció alimentària industrial. Extreus dades estructurades de dictats de veu en català o castellà.
 
 L'usuari dicta informació sobre UN PRODUCTE. Has d'extreure i distribuir les dades en MÚLTIPLES TAULES.
@@ -137,7 +260,7 @@ const Btn = ({ children, style, ...props }) => (
 );
 
 export default function App() {
-  const { data, loading, insertRows, updateCell, deleteRow: dbDelete, reload } = useDatabase();
+  const { data, loading, insertRows, mergeRow, updateCell, deleteRow: dbDelete, reload } = useDatabase();
 
   const [act, setAct] = useState("productes");
   const [isRec, setIsRec] = useState(false);
@@ -151,6 +274,7 @@ export default function App() {
   const [ev, setEv] = useState("");
   const [mr, setMr] = useState(null);
   const [pvt, setPvt] = useState("productes");
+  const [changeLog, setChangeLog] = useState([]);
   const rRef = useRef(null);
   const eRef = useRef(null);
 
@@ -219,20 +343,17 @@ export default function App() {
       const raw = res.content?.map(c => c.type === "text" ? c.text : "").join("").replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(raw);
 
-      // Deduplicate lines
-      if (parsed.linies?.length) {
-        const existing = new Set(data.linies.map(l => (l.linia || "").toLowerCase()));
-        parsed.linies = parsed.linies.filter(l => !existing.has((l.linia || "").toLowerCase()));
-      }
+      const { resolved, changeLog: changes } = resolveCanonicalNames(parsed, data);
 
-      const total = CASCADE.reduce((s, t) => s + (parsed[t]?.length || 0), 0);
+      const total = CASCADE.reduce((s, t) => s + (resolved[t]?.length || 0), 0);
       if (!total) {
         setStat("No s'han pogut extreure dades. Prova amb més detall.");
       } else {
-        setPend(parsed);
-        setPvt(CASCADE.find(t => parsed[t]?.length > 0) || "productes");
-        const summary = CASCADE.filter(t => parsed[t]?.length > 0)
-          .map(t => `${SCHEMAS[t].icon} ${SCHEMAS[t].label}: ${parsed[t].length}`)
+        setPend(resolved);
+        setChangeLog(changes);
+        setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
+        const summary = CASCADE.filter(t => resolved[t]?.length > 0)
+          .map(t => `${SCHEMAS[t].icon} ${SCHEMAS[t].label}: ${resolved[t].length}`)
           .join("  ·  ");
         setStat(`✅ ${summary}  — Revisa i confirma.`);
       }
@@ -245,16 +366,35 @@ export default function App() {
   /* ─── Confirm pending (save to DB) ─── */
   const confirmAll = useCallback(async () => {
     setStat("💾 Guardant a la base de dades...");
-    let total = 0;
+    let nInserted = 0, nUpdated = 0, nErrors = 0;
+
     for (const t of CASCADE) {
-      if (pend[t]?.length) {
-        await insertRows(t, pend[t]);
-        total += pend[t].length;
+      const rows = pend[t] || [];
+      if (!rows.length) continue;
+
+      const toInsert = rows.filter(r => r._action !== 'update');
+      const toUpdate = rows.filter(r => r._action === 'update' && r._existingId);
+
+      if (toInsert.length) {
+        const inserted = await insertRows(t, toInsert);
+        nInserted += inserted.length;
+        if (inserted.length < toInsert.length) nErrors += toInsert.length - inserted.length;
+      }
+
+      for (const row of toUpdate) {
+        const merged = await mergeRow(t, row._existingId, row);
+        if (merged !== null) nUpdated++;
+        else nErrors++;
       }
     }
-    setPend(null); setTxt("");
-    setStat(`✅ ${total} registres guardats correctament.`);
-  }, [pend, insertRows]);
+
+    setPend(null); setTxt(""); setChangeLog([]);
+    const parts = [];
+    if (nInserted) parts.push(`${nInserted} nous`);
+    if (nUpdated) parts.push(`${nUpdated} actualitzats`);
+    const errTxt = nErrors ? `  ⚠️ ${nErrors} errors (consola)` : '';
+    setStat(`✅ ${parts.join(' · ') || 'Sense canvis nous'}${errTxt}`);
+  }, [pend, insertRows, mergeRow]);
 
   const editPendCell = (table, ri, key) => {
     const val = prompt(`Editar "${key}":`, pend[table][ri][key] ?? "");
@@ -495,17 +635,35 @@ export default function App() {
               ))}
               <div style={{ flex: 1 }} />
               <Btn onClick={confirmAll} style={{ padding: "5px 16px", background: C.gD, border: `1px solid ${C.g}`, color: C.g, fontSize: 11 }}>✓ Confirmar tot</Btn>
-              <Btn onClick={() => { setPend(null); setStat("Descartat."); }} style={{ padding: "5px 16px", background: C.rD, border: `1px solid ${C.r}`, color: C.r, fontSize: 11 }}>✗ Descartar</Btn>
+              <Btn onClick={() => { setPend(null); setChangeLog([]); setStat("Descartat."); }} style={{ padding: "5px 16px", background: C.rD, border: `1px solid ${C.r}`, color: C.r, fontSize: 11 }}>✗ Descartar</Btn>
             </div>
+            {changeLog.length > 0 && (
+              <div style={{ padding: "7px 24px", background: "#1E1A06", borderBottom: `1px solid ${C.o}`, fontSize: 10, color: C.o, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                <span style={{ fontWeight: 700, marginRight: 4 }}>⚠️ Noms normalitzats:</span>
+                {changeLog.map((c, i) => (
+                  <span key={i} style={{ background: C.oD, borderRadius: 3, padding: "2px 7px" }}>
+                    "{c.from}" → <strong style={{ color: C.t1 }}>"{c.to}"</strong>
+                    <span style={{ color: C.t3, marginLeft: 4 }}>({SCHEMAS[c.table]?.label || c.table})</span>
+                  </span>
+                ))}
+              </div>
+            )}
             <div style={{ padding: "10px 24px 16px", overflowX: "auto", maxHeight: 260, overflowY: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead><tr>
+                  <th style={{ ...thS, color: C.o, width: 80 }}>Acció</th>
                   {SCHEMAS[pvt].fields.map(f => <th key={f.key} style={{ ...thS, color: C.o }}>{f.label}</th>)}
                   <th style={{ ...thS, width: 30 }} />
                 </tr></thead>
                 <tbody>
                   {(pend[pvt] || []).map((row, ri) => (
                     <tr key={ri}>
+                      <td style={{ padding: "6px 10px", borderBottom: `1px solid ${C.b1}`, whiteSpace: "nowrap" }}>
+                        {row._action === 'update'
+                          ? <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: C.acD, color: C.ac, fontWeight: 600 }}>↻ Actualitza</span>
+                          : <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: C.gD, color: C.g, fontWeight: 600 }}>✦ Nou</span>
+                        }
+                      </td>
                       {SCHEMAS[pvt].fields.map(f => (
                         <td key={f.key} onClick={() => editPendCell(pvt, ri, f.key)}
                           style={{ padding: "6px 10px", borderBottom: `1px solid ${C.b1}`, color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3, cursor: "pointer" }}>
@@ -519,7 +677,7 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
-              <p style={{ fontSize: 10, color: C.t3, marginTop: 8, marginBottom: 0 }}>💡 Clic a cel·la per corregir · ✕ per eliminar fila</p>
+              <p style={{ fontSize: 10, color: C.t3, marginTop: 8, marginBottom: 0 }}>💡 Clic a cel·la per corregir · ✕ per eliminar fila · <span style={{ color: C.ac }}>↻ Actualitza</span> = omple camps buits · <span style={{ color: C.g }}>✦ Nou</span> = inserció nova</p>
             </div>
           </div>
         )}

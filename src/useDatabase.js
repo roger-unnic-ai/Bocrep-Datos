@@ -10,6 +10,14 @@ const TABLE_MAP = {
   torns: 'torns',
 }
 
+// Fields that must never be sent to the DB
+const META_FIELDS = ['_id', 'id', 'created_at', '_action', '_existingId']
+const cleanRow = r => {
+  const o = { ...r }
+  META_FIELDS.forEach(f => delete o[f])
+  return o
+}
+
 export function useDatabase() {
   const [data, setData] = useState(() => {
     const init = {}
@@ -18,7 +26,6 @@ export function useDatabase() {
   })
   const [loading, setLoading] = useState(true)
 
-  // Load all data on mount
   useEffect(() => {
     loadAll()
   }, [])
@@ -26,7 +33,6 @@ export function useDatabase() {
   const loadAll = async () => {
     setLoading(true)
     if (!supabase) {
-      // Fallback: try localStorage
       try {
         const saved = localStorage.getItem('produccio_data')
         if (saved) setData(JSON.parse(saved))
@@ -41,7 +47,7 @@ export function useDatabase() {
         .from(table)
         .select('*')
         .order('created_at', { ascending: true })
-      
+
       if (error) {
         console.error(`Error loading ${table}:`, error)
         newData[key] = []
@@ -57,16 +63,9 @@ export function useDatabase() {
   const insertRows = useCallback(async (tableKey, rows) => {
     if (!rows.length) return []
 
-    const clean = rows.map(r => {
-      const o = { ...r }
-      delete o._id
-      delete o.id
-      delete o.created_at
-      return o
-    })
+    const clean = rows.map(cleanRow)
 
     if (!supabase) {
-      // Fallback: local with generated IDs
       const withIds = clean.map((r, i) => ({ ...r, id: `local-${Date.now()}-${i}` }))
       setData(prev => {
         const next = { ...prev, [tableKey]: [...prev[tableKey], ...withIds] }
@@ -93,9 +92,51 @@ export function useDatabase() {
     return inserted
   }, [])
 
+  // Merge new data into an existing row — only fills fields that are currently empty/null
+  const mergeRow = useCallback(async (tableKey, rowId, newData) => {
+    const existing = data[tableKey]?.find(r => r.id === rowId)
+    if (!existing) return null
+
+    const updates = {}
+    Object.entries(newData).forEach(([k, v]) => {
+      if (META_FIELDS.includes(k)) return
+      const cur = existing[k]
+      const isEmpty = cur === null || cur === undefined || cur === ''
+      const hasVal = v !== null && v !== undefined && v !== ''
+      if (isEmpty && hasVal) updates[k] = v
+    })
+
+    if (!Object.keys(updates).length) return existing // nothing new to fill in
+
+    const merged = { ...existing, ...updates }
+
+    setData(prev => {
+      const next = {
+        ...prev,
+        [tableKey]: prev[tableKey].map(r => r.id === rowId ? merged : r),
+      }
+      if (!supabase) {
+        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
+      }
+      return next
+    })
+
+    if (supabase) {
+      const { error } = await supabase
+        .from(TABLE_MAP[tableKey])
+        .update(updates)
+        .eq('id', rowId)
+      if (error) {
+        console.error(`Merge error (${tableKey}):`, error)
+        return null
+      }
+    }
+
+    return merged
+  }, [data])
+
   // Update a single cell
   const updateCell = useCallback(async (tableKey, rowId, field, value) => {
-    // Optimistic update
     setData(prev => {
       const rows = prev[tableKey].map(r =>
         (r.id === rowId) ? { ...r, [field]: value } : r
@@ -137,5 +178,5 @@ export function useDatabase() {
     }
   }, [])
 
-  return { data, loading, insertRows, updateCell, deleteRow, reload: loadAll }
+  return { data, loading, insertRows, mergeRow, updateCell, deleteRow, reload: loadAll }
 }
