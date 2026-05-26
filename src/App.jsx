@@ -65,7 +65,7 @@ const SCHEMAS = {
       { key: "persones_necessaries", label: "Persones necessàries",        type: "number" },
       { key: "perfils_de_persona",   label: "Perfils de persona",          type: "text" },
       { key: "es_pot_parar",         label: "Es pot parar (sí/no)",        type: "select", options: ["Sí", "No"] },
-      { key: "prerequisits",         label: "Prerequisits (línies prèvies)", type: "text" },
+      { key: "prerequisits",         label: "Prerequisits (dies anteriors)", type: "text" },
       { key: "comentaris",           label: "Comentaris",                  type: "text" },
     ],
   },
@@ -127,11 +127,18 @@ const fuzzyMatch = (a, b) => {
 const ENTITY_DEFS = [
   {
     table: 'productes', keyField: 'producte',
-    refs: [{ table: 'recepta', field: 'producte' }, { table: 'flux', field: 'producte' }],
+    refs: [
+      { table: 'recepta', field: 'producte', clearIfUnresolved: true },
+      { table: 'flux', field: 'producte', clearIfUnresolved: true },
+    ],
   },
   {
+    // linia és OBLIGATÒRIA a flux: si no es pot resoldre, es manté el valor proposat
+    // i s'afegeix automàticament com a nova entrada a linies
     table: 'linies', keyField: 'linia',
-    refs: [{ table: 'flux', field: 'linia' }],
+    refs: [
+      { table: 'flux', field: 'linia', clearIfUnresolved: false, autoAdd: true },
+    ],
   },
   {
     table: 'farcit', keyField: 'codi_nom_mp',
@@ -179,9 +186,7 @@ function resolveCanonicalNames(parsed, dbData) {
       })
     }
 
-    // Propaga el nom canònic a les taules que el referencien.
-    // Si el valor proposat no coincideix amb cap entitat (ni BD ni batch), el deixa buit
-    // per evitar referències penjants.
+    // Propaga el nom canònic a les taules que el referencien
     for (const ref of refs) {
       if (!resolved[ref.table]?.length) continue
       resolved[ref.table] = resolved[ref.table].map(row => {
@@ -190,11 +195,23 @@ function resolveCanonicalNames(parsed, dbData) {
         // 1. Coincideix amb una entitat del batch (nova o existent)
         const mapped = mapping[normalizeStr(refVal)]
         if (mapped) return { ...row, [ref.field]: mapped.canonical }
-        // 2. Coincideix directament amb la BD (per si el camp no era a resolved[table])
+        // 2. Coincideix directament amb la BD
         const directMatch = existing.find(e => fuzzyMatch(refVal, e[keyField]))
         if (directMatch) return { ...row, [ref.field]: directMatch[keyField] }
-        // 3. No resolt — camp buit per no crear una referència invàlida
-        return { ...row, [ref.field]: '' }
+        // 3. No resolt
+        if (ref.clearIfUnresolved) {
+          // Referència invàlida: buidar el camp (p.ex. producte inexistent)
+          return { ...row, [ref.field]: '' }
+        }
+        if (ref.autoAdd) {
+          // Camp obligatori (p.ex. linia): crear l'entitat automàticament si no existeix al batch
+          const alreadyInBatch = resolved[table]?.some(e => fuzzyMatch(e[keyField], refVal))
+          if (!alreadyInBatch) {
+            resolved[table] = [...(resolved[table] || []), { [keyField]: refVal, _action: 'insert', _existingId: null }]
+            mapping[normalizeStr(refVal)] = { canonical: refVal, existingId: null }
+          }
+        }
+        return row // mantenir el valor original
       })
     }
   }
@@ -233,8 +250,12 @@ L'usuari dicta informació sobre UN PRODUCTE. Has d'extreure i distribuir les da
    → Línies ja existents al sistema: {{EXISTING_LINES}}
    → Si la línia ja existeix, NO la incloguis.
 
-5. FLUX (1 fila per pas de fabricació, ordenat):
+5. FLUX (1 fila per pas de fabricació — descriu TOT el procés del producte):
    producte, dia (número d'ordre: 1,2,3...), linia, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar (Sí/No), prerequisits, comentaris
+   → OBLIGATORI: cada fila SEMPRE ha de tenir 'producte' i 'linia'. Si el pas no té línia específica (espera, control de qualitat, emmagatzematge...), usa "Espera" com a nom de línia.
+   → MÚLTIPLES LÍNIES: si un pas pot executar-se en MÉS D'UNA LÍNIA simultàniament, crea UNA FILA SEPARADA per cada línia possible, amb el MATEIX 'producte' i 'dia'.
+   → 'prerequisits': llista dels números 'dia' dels passos que han d'estar acabats ABANS que aquest pugui iniciar-se (ex: "1", "1,2"). Deixa null si no depèn de cap pas anterior.
+   → Sempre inclou un pas final (el de 'dia' més alt) que representi la sortida o producte acabat.
 
 ══ REGLES ══
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
