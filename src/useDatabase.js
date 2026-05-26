@@ -13,8 +13,12 @@ const TABLE_MAP = {
 // Fields that must never be sent to the DB
 const META_FIELDS = ['_id', 'id', 'created_at', '_action', '_existingId']
 const cleanRow = r => {
-  const o = { ...r }
-  META_FIELDS.forEach(f => delete o[f])
+  const o = {}
+  Object.entries(r).forEach(([k, v]) => {
+    if (META_FIELDS.includes(k)) return
+    // Empty strings and undefined → null so PostgreSQL numeric columns don't reject the row
+    o[k] = (v === '' || v === undefined) ? null : v
+  })
   return o
 }
 

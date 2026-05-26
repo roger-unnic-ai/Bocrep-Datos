@@ -245,7 +245,9 @@ L'usuari dicta informació sobre UN PRODUCTE. Has d'extreure i distribuir les da
 - Si una taula no té informació → array buit [].
 - El nom de producte ha de ser EXACTAMENT igual a totes les taules.
 - Al flux, numera "dia" seqüencialment: 1, 2, 3...
-- Mermes en percentatge (ex: 3 = 3%).`;
+- Mermes en percentatge (ex: 3 = 3%).
+- VALORS NO MENCIONATS: si un camp numèric no s'ha mencionat, usa null (mai ""). Si un camp de text no s'ha mencionat, omit-lo o usa null (mai "").
+- TIPUS ESTRICTES: camps numèrics → sempre number o null, MAI string. Camps de text → string o null, MAI número.`;
 
 /* ═══ Colors ═══ */
 const C = {
