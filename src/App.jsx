@@ -337,7 +337,7 @@ export default function App() {
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 2048,
+          model: "claude-sonnet-4-20250514", max_tokens: 32000,
           system: SYS_PROMPT.replace("{{EXISTING_LINES}}", existingLines),
           messages: [{ role: "user", content: text }],
         }),
