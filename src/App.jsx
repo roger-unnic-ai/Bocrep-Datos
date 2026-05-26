@@ -179,17 +179,22 @@ function resolveCanonicalNames(parsed, dbData) {
       })
     }
 
-    // Propaga el nom canònic a les taules que el referencien
+    // Propaga el nom canònic a les taules que el referencien.
+    // Si el valor proposat no coincideix amb cap entitat (ni BD ni batch), el deixa buit
+    // per evitar referències penjants.
     for (const ref of refs) {
       if (!resolved[ref.table]?.length) continue
       resolved[ref.table] = resolved[ref.table].map(row => {
         const refVal = row[ref.field]
         if (!refVal) return row
+        // 1. Coincideix amb una entitat del batch (nova o existent)
         const mapped = mapping[normalizeStr(refVal)]
         if (mapped) return { ...row, [ref.field]: mapped.canonical }
+        // 2. Coincideix directament amb la BD (per si el camp no era a resolved[table])
         const directMatch = existing.find(e => fuzzyMatch(refVal, e[keyField]))
         if (directMatch) return { ...row, [ref.field]: directMatch[keyField] }
-        return row
+        // 3. No resolt — camp buit per no crear una referència invàlida
+        return { ...row, [ref.field]: '' }
       })
     }
   }
