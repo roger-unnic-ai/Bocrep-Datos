@@ -64,6 +64,7 @@ create table if not exists flux (
   producte              text,
   dia                   numeric,
   linia                 text,
+  massa                 numeric,
   temps_per_kg          numeric,
   persones_necessaries  numeric,
   perfils_de_persona    text,
@@ -71,6 +72,10 @@ create table if not exists flux (
   prerequisits          text,
   comentaris            text
 );
+
+-- Migració: afegir columna massa si la taula ja existia
+-- Executa aquesta línia si la taula flux ja existia al teu projecte:
+-- ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
 
 -- 6. TORNS
 create table if not exists torns (

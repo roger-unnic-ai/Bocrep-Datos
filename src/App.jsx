@@ -44,14 +44,14 @@ const SCHEMAS = {
     ],
   },
   linies: {
-    label: "Línies", icon: "🏭", voice: true,
+    label: "Recursos", icon: "🏭", voice: true, manual: true,
     fields: [
-      { key: "linia",             label: "Línia",                      type: "text",   req: true },
-      { key: "tipus",             label: "Tipus (màquina/procés)",     type: "text" },
+      { key: "linia",             label: "Recurs / Línia",             type: "text",   req: true },
+      { key: "tipus",             label: "Tipus (màquina/eina/estri)", type: "text" },
       { key: "descripcio",        label: "Descripció",                 type: "text" },
-      { key: "temps_preparacio",  label: "Temps de preparació",        type: "number" },
-      { key: "temps_neteja",      label: "Temps neteja",               type: "number" },
-      { key: "temps_espera",      label: "Temps espera reutilització", type: "number" },
+      { key: "temps_preparacio",  label: "Temps preparació (min)",     type: "number" },
+      { key: "temps_neteja",      label: "Temps neteja (min)",         type: "number" },
+      { key: "temps_espera",      label: "Temps espera (min)",         type: "number" },
       { key: "comentaris",        label: "Comentaris",                 type: "text" },
     ],
   },
@@ -59,8 +59,9 @@ const SCHEMAS = {
     label: "Flux", icon: "🔄", voice: true,
     fields: [
       { key: "producte",             label: "Producte",                    type: "text",   req: true },
-      { key: "dia",                  label: "Dia",                         type: "number" },
-      { key: "linia",                label: "Línia",                       type: "text" },
+      { key: "dia",                  label: "Pas (dia)",                   type: "number" },
+      { key: "linia",                label: "Recurs / Línia",              type: "text" },
+      { key: "massa",                label: "Massa (kg)",                  type: "number" },
       { key: "temps_per_kg",         label: "Temps per kg",                type: "number" },
       { key: "persones_necessaries", label: "Persones necessàries",        type: "number" },
       { key: "perfils_de_persona",   label: "Perfils de persona",          type: "text" },
@@ -230,45 +231,85 @@ function resolveCanonicalNames(parsed, dbData) {
   return { resolved, changeLog }
 }
 
-const SYS_PROMPT = `Ets un assistent expert en producció alimentària industrial. Extreus dades estructurades de dictats de veu en català o castellà.
+/* ══════════════════════════════════════════════════════════════
+   PROMPTS — pipeline de 3 crides sequencials a la IA
+   Context: sistema d'optimització de producció industrial
+   ══════════════════════════════════════════════════════════════ */
 
-L'usuari dicta informació sobre UN PRODUCTE. Has d'extreure i distribuir les dades en MÚLTIPLES TAULES.
+const PROMPT_PROD_RECEPTA = `Ets un assistent expert en producció alimentària industrial. Treballes per a un sistema d'OPTIMITZACIÓ DE LA PRODUCCIÓ que, a partir de les receptes i els recursos disponibles, optimitza l'ús del personal i les màquines per maximitzar l'eficiència productiva.
 
-══ TAULES I CAMPS EXACTES ══
+L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les dades per a TRES TAULES:
 
 1. PRODUCTES (1 fila per producte):
    producte, grup, unitats_per_palet, caixes_per_palet, unitats_per_caixa, kg_massa_palet, codi_massa, kg_farcit_palet, codi_farcit, dies_permesos, incompatible_amb, comentaris
+   → Dies permesos: Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge. Format: "Dll-Dm-Dc"
 
 2. RECEPTA (1 fila per producte — relació massa+farcit):
    producte, codi_farcit, grams_per_unitat_farcit, merma_farcit, codi_massa, grams_per_unit_massa, merma_massa, comentaris
+   → Mermes en percentatge (ex: 3 = 3%).
 
 3. FARCIT (1 fila per matèria primera de farcit):
    codi_nom_mp, grams_per_unitat, merma
 
-4. LÍNIES (NOMÉS línies/màquines NO existents):
-   linia, tipus, descripcio, temps_preparacio, temps_neteja, temps_espera, comentaris
-   → Línies ja existents al sistema: {{EXISTING_LINES}}
-   → Si la línia ja existeix, NO la incloguis.
+Productes ja existents al sistema (no duplicar): {{EXISTING_PRODUCTS}}
 
-5. FLUX (1 fila per pas de fabricació — descriu TOT el procés del producte):
-   producte, dia (número d'ordre: 1,2,3...), linia, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar (Sí/No), prerequisits, comentaris
-   → OBLIGATORI: cada fila SEMPRE ha de tenir 'producte' i 'linia'. Si el pas no té línia específica (espera, control de qualitat, emmagatzematge...), usa "Espera" com a nom de línia.
-   → MÚLTIPLES LÍNIES: si un pas pot executar-se en MÉS D'UNA LÍNIA simultàniament, crea UNA FILA SEPARADA per cada línia possible, amb el MATEIX 'producte' i 'dia'.
-   → 'prerequisits': llista dels números 'dia' dels passos que han d'estar acabats ABANS que aquest pugui iniciar-se (ex: "1", "1,2"). Deixa null si no depèn de cap pas anterior.
-   → Sempre inclou un pas final (el de 'dia' més alt) que representi la sortida o producte acabat.
-
-══ REGLES ══
+REGLES ESTRICTES:
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
-- Format exacte: {"productes":[...],"recepta":[...],"farcit":[...],"linies":[...],"flux":[...]}
-- Usa exactament les claus especificades (case-sensitive, minúscules amb guions baixos).
-- Converteix números parlats a xifres (vint-i-cinc → 25).
-- Dies: Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge. Format: "Dll-Dm-Dc"
+- Format exacte: {"productes":[...],"recepta":[...],"farcit":[...]}
+- Claus exactes (case-sensitive, minúscules amb guions baixos). Converteix números parlats a xifres.
 - Si una taula no té informació → array buit [].
-- El nom de producte ha de ser EXACTAMENT igual a totes les taules.
-- Al flux, numera "dia" seqüencialment: 1, 2, 3...
-- Mermes en percentatge (ex: 3 = 3%).
-- VALORS NO MENCIONATS: si un camp numèric no s'ha mencionat, usa null (mai ""). Si un camp de text no s'ha mencionat, omit-lo o usa null (mai "").
-- TIPUS ESTRICTES: camps numèrics → sempre number o null, MAI string. Camps de text → string o null, MAI número.`;
+- VALORS NO MENCIONATS: numèrics → null (MAI ""). Textos → null (MAI "").
+- TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
+
+const PROMPT_FLUX = `Ets un assistent expert en producció alimentària industrial. Treballes per a un sistema d'OPTIMITZACIÓ DE LA PRODUCCIÓ que necessita conèixer tots els passos del procés per planificar l'ús òptim del personal i els recursos.
+
+L'usuari ha dictat informació sobre el producte "{{PROPOSED_PRODUCTE}}". Extreu tots els PASSOS DEL FLUX DE PRODUCCIÓ.
+
+FLUX (1 fila per pas de fabricació — ha de descriure TOT el procés de principi a fi):
+producte, dia, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
+
+Recursos (màquines/estris/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
+
+REGLES DEL FLUX:
+- 'dia': número d'ordre del pas (1, 2, 3...). Seqüencial.
+- 'linia': nom del recurs físic (màquina, forn, eina...) que s'utilitza. OBLIGATORI en cada fila. Si el pas és d'espera, control o no requereix recurs físic → usa "Espera".
+- 'massa': kg de massa (pasta/massa del producte) que intervenen en aquest pas. null si no aplica.
+- 'temps_per_kg': minuts necessaris per processar 1 kg en aquest pas. null si no s'especifica.
+- 'persones_necessaries': nombre de persones necessàries per executar el pas.
+- 'perfils_de_persona': tipus de personal necessari (ex: "operari", "tècnic").
+- 'es_pot_parar': "Sí" si el procés es pot interrompre en aquest punt, "No" si ha de ser continu.
+- 'prerequisits': números 'dia' dels passos anteriors que han d'estar ACABATS abans que aquest pugui iniciar (ex: "1", "1,2"). null si no depèn de cap pas anterior.
+- MÚLTIPLES RECURSOS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs possible (mateix 'producte' i 'dia').
+- Inclou SEMPRE un pas final (el 'dia' més alt) que representi la sortida o producte acabat.
+
+REGLES GENERALS:
+- Retorna ÚNICAMENT: {"flux":[...]}. Cap markdown, cap text extra.
+- VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
+- TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
+
+const PROMPT_LINIES = `Ets un assistent expert en producció alimentària industrial. Treballes per a un sistema d'OPTIMITZACIÓ DE LA PRODUCCIÓ que necessita un catàleg de recursos físics (màquines, forns, estris, equips) per planificar la producció.
+
+S'han definit els següents passos de producció:
+{{PROPOSED_FLUX}}
+
+Recursos ja existents al sistema (NO tornar a crear-los): {{EXISTING_RESOURCES}}
+
+Analitza els passos i identifica els RECURSOS NOUS que apareixen al flux i que NO existeixen encara al sistema.
+
+RECURSOS/LÍNIES (NOMÉS els nous — els que no estan ja a la llista d'existents):
+linia, tipus, descripcio, temps_preparacio, temps_neteja, temps_espera, comentaris
+
+IMPORTANT:
+- Un RECURS és un element FÍSIC: màquina, forn, batedora, motllo, eina, equip. NO és un pas del procés.
+- "Espera" és un recurs especial (pausa/espera) — inclou'l si apareix al flux i no existeix als recursos actuals.
+- 'temps_preparacio', 'temps_neteja', 'temps_espera': en minuts. null si no s'especifica.
+- 'tipus': categoria del recurs (ex: "forn", "batedora", "màquina", "estri", "espera").
+- Si TOTS els recursos del flux ja existeixen → retorna {"linies":[]}.
+
+REGLES:
+- Retorna ÚNICAMENT: {"linies":[...]}. Cap markdown, cap text extra.
+- VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
+- TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
 
 /* ═══ Colors ═══ */
 const C = {
@@ -335,22 +376,20 @@ export default function App() {
 
   const stopRec = useCallback(() => { rRef.current?.stop(); setIsRec(false); setInterim(""); }, []);
 
-  /* ─── AI Parse ─── */
+  /* ─── AI Parse — pipeline de 3 crides sequencials ─── */
   const parseVoice = useCallback(async () => {
     const text = txt.trim();
     if (!text) { setStat("No hi ha text."); return; }
-    setParsing(true); setStat("🤖 Processant amb IA...");
-
-    const existingLines = data.linies.map(l => l.linia).filter(Boolean).join(", ") || "(cap)";
     const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+    if (!apiKey) { setStat("❌ Falta VITE_ANTHROPIC_API_KEY a les variables d'entorn."); return; }
 
-    if (!apiKey) {
-      setStat("❌ Falta VITE_ANTHROPIC_API_KEY a les variables d'entorn.");
-      setParsing(false);
-      return;
-    }
+    setParsing(true);
 
-    try {
+    const existingProducts = data.productes.map(p => p.producte).filter(Boolean).join(", ") || "(cap)";
+    const existingResources = data.linies.filter(l => l.linia)
+      .map(l => l.tipus ? `${l.linia} (${l.tipus})` : l.linia).join(", ") || "(cap)";
+
+    const callAI = async (systemPrompt) => {
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -360,16 +399,49 @@ export default function App() {
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 32000,
-          system: SYS_PROMPT.replace("{{EXISTING_LINES}}", existingLines),
+          model: "claude-sonnet-4-20250514", max_tokens: 16000,
+          system: systemPrompt,
           messages: [{ role: "user", content: text }],
         }),
       });
       const res = await resp.json();
       if (res.error) throw new Error(res.error.message);
-
       const raw = res.content?.map(c => c.type === "text" ? c.text : "").join("").replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(raw);
+      return JSON.parse(raw);
+    };
+
+    try {
+      // Crida 1: Producte + Recepta + Farcit
+      setStat("🤖 (1/3) Processant producte, recepta i farcit...");
+      const res1 = await callAI(
+        PROMPT_PROD_RECEPTA.replace("{{EXISTING_PRODUCTS}}", existingProducts)
+      );
+
+      const proposedProducte = res1.productes?.[0]?.producte || "";
+
+      // Crida 2: Flux
+      setStat("🤖 (2/3) Processant flux de producció...");
+      const res2 = await callAI(
+        PROMPT_FLUX
+          .replace("{{EXISTING_RESOURCES}}", existingResources)
+          .replace("{{PROPOSED_PRODUCTE}}", proposedProducte)
+      );
+
+      // Crida 3: Recursos / Línies
+      setStat("🤖 (3/3) Identificant recursos necessaris...");
+      const res3 = await callAI(
+        PROMPT_LINIES
+          .replace("{{EXISTING_RESOURCES}}", existingResources)
+          .replace("{{PROPOSED_FLUX}}", JSON.stringify(res2.flux || [], null, 2))
+      );
+
+      const parsed = {
+        productes: res1.productes || [],
+        recepta:   res1.recepta   || [],
+        farcit:    res1.farcit    || [],
+        flux:      res2.flux      || [],
+        linies:    res3.linies    || [],
+      };
 
       const { resolved, changeLog: changes } = resolveCanonicalNames(parsed, data);
 
@@ -389,7 +461,7 @@ export default function App() {
       console.error(err);
       setStat(`❌ Error: ${err.message}`);
     } finally { setParsing(false); }
-  }, [txt, data.linies]);
+  }, [txt, data.productes, data.linies]);
 
   /* ─── Confirm pending (save to DB) ─── */
   const confirmAll = useCallback(async () => {
@@ -607,11 +679,22 @@ export default function App() {
           </section>
         )}
 
-        {isV && act !== "productes" && (
+        {isV && act !== "productes" && !sc.manual && (
           <div style={{ padding: "12px 24px", borderBottom: `1px solid ${C.b1}`, background: C.s1, fontSize: 11, color: C.t2 }}>
             💡 S'omple automàticament des de{" "}
             <strong style={{ color: C.ac, cursor: "pointer" }} onClick={() => setAct("productes")}>📦 Productes</strong>.
             Fes clic a qualsevol cel·la per editar.
+          </div>
+        )}
+
+        {isV && act !== "productes" && sc.manual && (
+          <div style={{ padding: "12px 24px", borderBottom: `1px solid ${C.b1}`, background: C.s1, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 11, color: C.t2 }}>
+              💡 Els recursos s'afegeixen automàticament des de{" "}
+              <strong style={{ color: C.ac, cursor: "pointer" }} onClick={() => setAct("productes")}>📦 Productes</strong>.
+              {" "}També pots gestionar-los manualment.
+            </span>
+            <Btn onClick={openManual} style={{ padding: "6px 16px", background: C.acD, border: `1px solid ${C.ac}`, color: C.ac, fontSize: 11, flexShrink: 0, marginLeft: 12 }}>+ Afegir recurs</Btn>
           </div>
         )}
 
@@ -718,7 +801,8 @@ export default function App() {
               <div style={{ fontSize: 14, marginBottom: 8 }}>Encara no hi ha registres a {sc.label}</div>
               <div style={{ fontSize: 11 }}>
                 {act === "productes" && 'Prem "Gravar veu" per dictar el primer producte'}
-                {isV && act !== "productes" && "S'omplirà quan dictis un producte"}
+                {isV && act !== "productes" && !sc.manual && "S'omplirà quan dictis un producte"}
+                {act === "linies" && 'S\'afegiran automàticament en dictar un producte, o prem "+ Afegir recurs"'}
                 {!isV && 'Prem "+ Afegir registre"'}
               </div>
             </div>
