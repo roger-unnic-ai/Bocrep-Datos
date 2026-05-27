@@ -58,16 +58,17 @@ const SCHEMAS = {
   flux: {
     label: "Flux", icon: "🔄", voice: true,
     fields: [
-      { key: "producte",             label: "Producte",                    type: "text",   req: true },
-      { key: "dia",                  label: "Pas (dia)",                   type: "number" },
-      { key: "linia",                label: "Recurs / Línia",              type: "text" },
-      { key: "massa",                label: "Massa (kg)",                  type: "number" },
-      { key: "temps_per_kg",         label: "Temps per kg",                type: "number" },
-      { key: "persones_necessaries", label: "Persones necessàries",        type: "number" },
-      { key: "perfils_de_persona",   label: "Perfils de persona",          type: "text" },
-      { key: "es_pot_parar",         label: "Es pot parar (sí/no)",        type: "select", options: ["Sí", "No"] },
-      { key: "prerequisits",         label: "Prerequisits (dies anteriors)", type: "text" },
-      { key: "comentaris",           label: "Comentaris",                  type: "text" },
+      { key: "producte",             label: "Producte",                     type: "text",   req: true },
+      { key: "pas",                  label: "Pas (índex)",                  type: "number" },
+      { key: "dia",                  label: "Dia del cicle",                type: "number" },
+      { key: "linia",                label: "Recurs físic",                 type: "text" },
+      { key: "massa",                label: "Massa (kg)",                   type: "number" },
+      { key: "temps_per_kg",         label: "Temps per kg",                 type: "number" },
+      { key: "persones_necessaries", label: "Persones necessàries",         type: "number" },
+      { key: "perfils_de_persona",   label: "Perfils de persona",           type: "text" },
+      { key: "es_pot_parar",         label: "Es pot parar (sí/no)",         type: "select", options: ["Sí", "No"] },
+      { key: "prerequisits",         label: "Prerequisits (pas anteriors)", type: "text" },
+      { key: "comentaris",           label: "Comentaris",                   type: "text" },
     ],
   },
   torns: {
@@ -134,11 +135,11 @@ const ENTITY_DEFS = [
     ],
   },
   {
-    // linia és OBLIGATÒRIA a flux: si no es pot resoldre, es manté el valor proposat
-    // i s'afegeix automàticament com a nova entrada a linies
+    // linia a flux és OPCIONAL (null per a passos sense recurs físic).
+    // La 3a crida IA (PROMPT_LINIES) s'encarrega de crear els recursos nous.
     table: 'linies', keyField: 'linia',
     refs: [
-      { table: 'flux', field: 'linia', clearIfUnresolved: false, autoAdd: true },
+      { table: 'flux', field: 'linia', clearIfUnresolved: false },
     ],
   },
   {
@@ -150,13 +151,21 @@ const ENTITY_DEFS = [
 // Taules secundàries: com detectar si una fila ja existeix
 const SECONDARY_CHECKS = [
   {
+    // Recepta: 1 fila per (producte + codi_farcit)
     table: 'recepta',
-    matchFn: (row, existing) => fuzzyMatch(row.producte, existing.producte),
+    matchFn: (row, existing) =>
+      fuzzyMatch(row.producte, existing.producte) &&
+      row.codi_farcit != null && existing.codi_farcit != null &&
+      row.codi_farcit === existing.codi_farcit,
   },
   {
+    // Flux: 1 fila per (producte + pas). Si pas no existeix, fallback a (producte + dia)
     table: 'flux',
-    matchFn: (row, existing) =>
-      fuzzyMatch(row.producte, existing.producte) && String(row.dia) === String(existing.dia),
+    matchFn: (row, existing) => {
+      if (row.pas != null && existing.pas != null)
+        return fuzzyMatch(row.producte, existing.producte) && String(row.pas) === String(existing.pas)
+      return fuzzyMatch(row.producte, existing.producte) && String(row.dia) === String(existing.dia)
+    },
   },
 ]
 
@@ -244,8 +253,10 @@ L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les 
    producte, grup, unitats_per_palet, caixes_per_palet, unitats_per_caixa, kg_massa_palet, codi_massa, kg_farcit_palet, codi_farcit, dies_permesos, incompatible_amb, comentaris
    → Dies permesos: Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge. Format: "Dll-Dm-Dc"
 
-2. RECEPTA (1 fila per producte — relació massa+farcit):
+2. RECEPTA (1 fila per ingredient de farcit del producte):
    producte, codi_farcit, grams_per_unitat_farcit, merma_farcit, codi_massa, grams_per_unit_massa, merma_massa, comentaris
+   → Si el producte té MÚLTIPLES ingredients de farcit (codis_farcit), crea UNA FILA per cada codi_farcit, amb els seus grams i merma específics.
+   → codi_massa i les seves dades (grams_per_unit_massa, merma_massa) es repeteixen a cada fila si és el mateix per a totes.
    → Mermes en percentatge (ex: 3 = 3%).
 
 3. FARCIT (1 fila per matèria primera de farcit):
@@ -266,23 +277,25 @@ const PROMPT_FLUX = `Ets un assistent expert en producció alimentària industri
 L'usuari ha dictat informació sobre el producte "{{PROPOSED_PRODUCTE}}". Extreu tots els PASSOS DEL FLUX DE PRODUCCIÓ.
 
 FLUX (1 fila per pas de fabricació — ha de descriure TOT el procés de principi a fi):
-producte, dia, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
+producte, pas, dia, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
 
-Recursos (màquines/estris/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
+Recursos (màquines/zones/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
 
-REGLES DEL FLUX:
-- 'dia': número d'ordre del pas (1, 2, 3...). Seqüencial.
-- 'linia': nom del recurs físic (màquina, forn, eina...) que s'utilitza. OBLIGATORI en cada fila. Si el pas és d'espera, control o no requereix recurs físic → usa "Espera".
-- 'massa': kg de massa (pasta/massa del producte) que intervenen en aquest pas. null si no aplica.
-- 'temps_per_kg': minuts necessaris per processar 1 kg en aquest pas. null si no s'especifica.
-- 'persones_necessaries': nombre de persones necessàries per executar el pas.
-- 'perfils_de_persona': tipus de personal necessari (ex: "operari", "tècnic").
+CAMPS DEL FLUX:
+- 'producte': nom exacte del producte — ha de ser IDÈNTIC a totes les files.
+- 'pas': índex seqüencial global del pas en tot el procés (1, 2, 3...). Serveix per ordenar i per referenciar a prerequisits. Cada pas té un número únic.
+- 'dia': dia real del cicle de producció en que s'executa el pas (ex: dia 1, dia 2...). S'extreu del que es menciona a l'àudio. Si no es menciona explícitament, dedueix-lo de l'ordre lògic del procés.
+- 'linia': nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas. null si el pas no ocupa cap recurs físic (esperes, controls, tasques administratives, emmagatzematge).
+- 'massa': kg de massa del producte que intervenen en aquest pas. null si no aplica.
+- 'temps_per_kg': minuts necessaris per processar 1 kg. null si no s'especifica.
+- 'persones_necessaries': nombre de persones necessàries.
+- 'perfils_de_persona': tipus de personal (ex: "operari", "tècnic").
 - 'es_pot_parar': "Sí" si el procés es pot interrompre en aquest punt, "No" si ha de ser continu.
-- 'prerequisits': números 'dia' dels passos anteriors que han d'estar ACABATS abans que aquest pugui iniciar (ex: "1", "1,2"). null si no depèn de cap pas anterior.
-- MÚLTIPLES RECURSOS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs possible (mateix 'producte' i 'dia').
-- Inclou SEMPRE un pas final (el 'dia' més alt) que representi la sortida o producte acabat.
+- 'prerequisits': valors 'pas' dels passos anteriors que han d'estar ACABATS abans que aquest pugui iniciar (ex: "1", "1,2"). null si no depèn de cap pas anterior.
 
-REGLES GENERALS:
+REGLES:
+- MÚLTIPLES RECURSOS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas' i 'dia').
+- Inclou SEMPRE un pas final (el 'pas' més alt) que representi la sortida o producte acabat.
 - Retorna ÚNICAMENT: {"flux":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -299,12 +312,14 @@ Analitza els passos i identifica els RECURSOS NOUS que apareixen al flux i que N
 RECURSOS/LÍNIES (NOMÉS els nous — els que no estan ja a la llista d'existents):
 linia, tipus, descripcio, temps_preparacio, temps_neteja, temps_espera, comentaris
 
-IMPORTANT:
-- Un RECURS és un element FÍSIC: màquina, forn, batedora, motllo, eina, equip. NO és un pas del procés.
-- "Espera" és un recurs especial (pausa/espera) — inclou'l si apareix al flux i no existeix als recursos actuals.
+IMPORTANT — QUÈ ÉS UN RECURS:
+- Un RECURS és un element FÍSIC amb capacitat limitada: màquina, forn, batedora, motllo, zona de producció, equip. No es pot usar simultàniament per a més d'una tasca (o té un límit de capacitat).
+- Exemples de recursos VÀLIDS: "Forn 1", "Batedora Industrial", "Cambra de Fermentació", "Zona d'Envasat".
+- NO SÓN RECURSOS (no els registres): "Espera", "Magatzem", "Control de qualitat", "Emmagatzematge", qualsevol pas sense recurs físic (les files del flux amb 'linia: null' no generen recursos).
+- Ignora completament totes les files del flux on 'linia' sigui null — no hi ha cap recurs que registrar per a aquells passos.
 - 'temps_preparacio', 'temps_neteja', 'temps_espera': en minuts. null si no s'especifica.
-- 'tipus': categoria del recurs (ex: "forn", "batedora", "màquina", "estri", "espera").
-- Si TOTS els recursos del flux ja existeixen → retorna {"linies":[]}.
+- 'tipus': categoria física del recurs (ex: "forn", "batedora", "màquina", "cambra", "zona").
+- Si TOTS els recursos del flux amb 'linia' no null ja existeixen → retorna {"linies":[]}.
 
 REGLES:
 - Retorna ÚNICAMENT: {"linies":[...]}. Cap markdown, cap text extra.
@@ -344,6 +359,7 @@ export default function App() {
   const [mr, setMr] = useState(null);
   const [pvt, setPvt] = useState("productes");
   const [changeLog, setChangeLog] = useState([]);
+  const [fluxFilter, setFluxFilter] = useState("");
   const rRef = useRef(null);
   const eRef = useRef(null);
 
@@ -592,7 +608,7 @@ export default function App() {
             const active = key === act; const count = data[key].length;
             return (
               <div key={key}
-                onClick={() => { setAct(key); setPend(null); setTxt(""); setEc(null); setMr(null); setStat(""); }}
+                onClick={() => { setAct(key); setPend(null); setTxt(""); setEc(null); setMr(null); setStat(""); setFluxFilter(""); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 10,
                   padding: sb ? "10px 16px" : "10px 15px", cursor: "pointer",
@@ -793,66 +809,97 @@ export default function App() {
           </div>
         )}
 
+        {/* ═══ FLUX FILTER ═══ */}
+        {act === "flux" && data.flux.length > 0 && (
+          <div style={{ padding: "8px 24px", borderBottom: `1px solid ${C.b1}`, background: C.s1, display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ fontSize: 11, color: C.t3, flexShrink: 0 }}>Producte:</span>
+            <select value={fluxFilter} onChange={e => setFluxFilter(e.target.value)}
+              style={{ padding: "4px 8px", background: C.bg, border: `1px solid ${C.b1}`, borderRadius: 4, color: C.t1, fontSize: 12, fontFamily: "inherit" }}>
+              <option value="">Tots els productes ({data.flux.length} passos)</option>
+              {[...new Set(data.flux.map(r => r.producte).filter(Boolean))].sort().map(p => (
+                <option key={p} value={p}>{p} ({data.flux.filter(r => r.producte === p).length} passos)</option>
+              ))}
+            </select>
+            {fluxFilter && (
+              <Btn onClick={() => setFluxFilter("")} style={{ padding: "3px 10px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t3, fontSize: 10 }}>× Tots</Btn>
+            )}
+          </div>
+        )}
+
         {/* ═══ DATA TABLE ═══ */}
         <div style={{ flex: 1, padding: "16px 24px", overflowX: "auto", overflowY: "auto" }}>
-          {data[act].length === 0 ? (
-            <div style={{ textAlign: "center", padding: "50px 20px", color: C.t3 }}>
-              <div style={{ fontSize: 48, marginBottom: 14, opacity: 0.15 }}>{sc.icon}</div>
-              <div style={{ fontSize: 14, marginBottom: 8 }}>Encara no hi ha registres a {sc.label}</div>
-              <div style={{ fontSize: 11 }}>
-                {act === "productes" && 'Prem "Gravar veu" per dictar el primer producte'}
-                {isV && act !== "productes" && !sc.manual && "S'omplirà quan dictis un producte"}
-                {act === "linies" && 'S\'afegiran automàticament en dictar un producte, o prem "+ Afegir recurs"'}
-                {!isV && 'Prem "+ Afegir registre"'}
+          {(() => {
+            // Filtered + sorted rows with original indices preserved
+            const displayRows = act === "flux"
+              ? data[act]
+                  .map((row, i) => ({ row, idx: i }))
+                  .filter(({ row }) => !fluxFilter || row.producte === fluxFilter)
+                  .sort((a, b) => (a.row.pas ?? 9999) - (b.row.pas ?? 9999))
+              : data[act].map((row, i) => ({ row, idx: i }));
+
+            if (displayRows.length === 0) return (
+              <div style={{ textAlign: "center", padding: "50px 20px", color: C.t3 }}>
+                <div style={{ fontSize: 48, marginBottom: 14, opacity: 0.15 }}>{sc.icon}</div>
+                <div style={{ fontSize: 14, marginBottom: 8 }}>
+                  {fluxFilter ? `Cap pas per a "${fluxFilter}"` : `Encara no hi ha registres a ${sc.label}`}
+                </div>
+                <div style={{ fontSize: 11 }}>
+                  {act === "productes" && 'Prem "Gravar veu" per dictar el primer producte'}
+                  {isV && act !== "productes" && !sc.manual && "S'omplirà quan dictis un producte"}
+                  {act === "linies" && 'S\'afegiran automàticament en dictar un producte, o prem "+ Afegir recurs"'}
+                  {!isV && 'Prem "+ Afegir registre"'}
+                </div>
               </div>
-            </div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead><tr>
-                <th style={{ ...thS, width: 36, textAlign: "center" }}>#</th>
-                {sc.fields.map(f => <th key={f.key} style={thS}>{f.label}</th>)}
-                <th style={{ ...thS, width: 36 }} />
-              </tr></thead>
-              <tbody>
-                {data[act].map((row, ri) => (
-                  <tr key={row.id || ri}
-                    onMouseEnter={e => e.currentTarget.style.background = C.s2}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                    <td style={{ ...tdS, textAlign: "center", color: C.t3, fontSize: 10 }}>{ri + 1}</td>
-                    {sc.fields.map(f => {
-                      const isEd = ec?.ri === ri && ec?.key === f.key;
-                      return (
-                        <td key={f.key} onClick={() => !isEd && startEdit(ri, f.key, row[f.key])}
-                          style={{ ...tdS, cursor: "pointer", padding: isEd ? "2px 4px" : undefined }}>
-                          {isEd ? (
-                            f.options ? (
-                              <select ref={eRef} value={ev} onChange={e => setEv(e.target.value)} onBlur={commitEdit}
-                                onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
-                                style={ceS}>
-                                <option value="">—</option>{f.options.map(o => <option key={o} value={o}>{o}</option>)}
-                              </select>
+            );
+
+            return (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead><tr>
+                  <th style={{ ...thS, width: 36, textAlign: "center" }}>#</th>
+                  {sc.fields.map(f => <th key={f.key} style={thS}>{f.label}</th>)}
+                  <th style={{ ...thS, width: 36 }} />
+                </tr></thead>
+                <tbody>
+                  {displayRows.map(({ row, idx }, ri) => (
+                    <tr key={row.id || ri}
+                      onMouseEnter={e => e.currentTarget.style.background = C.s2}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <td style={{ ...tdS, textAlign: "center", color: C.t3, fontSize: 10 }}>{ri + 1}</td>
+                      {sc.fields.map(f => {
+                        const isEd = ec?.ri === idx && ec?.key === f.key;
+                        return (
+                          <td key={f.key} onClick={() => !isEd && startEdit(idx, f.key, row[f.key])}
+                            style={{ ...tdS, cursor: "pointer", padding: isEd ? "2px 4px" : undefined }}>
+                            {isEd ? (
+                              f.options ? (
+                                <select ref={eRef} value={ev} onChange={e => setEv(e.target.value)} onBlur={commitEdit}
+                                  onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
+                                  style={ceS}>
+                                  <option value="">—</option>{f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
+                              ) : (
+                                <input ref={eRef} type={f.type === "number" ? "number" : "text"} value={ev}
+                                  onChange={e => setEv(e.target.value)} onBlur={commitEdit}
+                                  onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
+                                  style={ceS} />
+                              )
                             ) : (
-                              <input ref={eRef} type={f.type === "number" ? "number" : "text"} value={ev}
-                                onChange={e => setEv(e.target.value)} onBlur={commitEdit}
-                                onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
-                                style={ceS} />
-                            )
-                          ) : (
-                            <span style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
-                              {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
-                            </span>
-                          )}
-                        </td>
-                      );
-                    })}
-                    <td style={tdS}>
-                      <span onClick={() => handleDelete(ri)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+                              <span style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
+                                {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td style={tdS}>
+                        <span onClick={() => handleDelete(idx)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
         </div>
       </main>
 

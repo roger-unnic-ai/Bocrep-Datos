@@ -62,6 +62,7 @@ create table if not exists flux (
   id            uuid primary key default gen_random_uuid(),
   created_at    timestamptz default now(),
   producte              text,
+  pas                   integer,
   dia                   numeric,
   linia                 text,
   massa                 numeric,
@@ -73,9 +74,9 @@ create table if not exists flux (
   comentaris            text
 );
 
--- Migració: afegir columna massa si la taula ja existia
--- Executa aquesta línia si la taula flux ja existia al teu projecte:
+-- Migració: executa aquestes línies si la taula flux ja existia al teu projecte:
 -- ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
+-- ALTER TABLE flux ADD COLUMN IF NOT EXISTS pas integer;
 
 -- 6. TORNS
 create table if not exists torns (
