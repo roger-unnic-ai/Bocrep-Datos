@@ -277,6 +277,7 @@ const PROMPT_FLUX = `Ets un assistent expert en producció alimentària industri
 L'usuari ha dictat informació sobre el producte "{{PROPOSED_PRODUCTE}}". Extreu tots els PASSOS DEL FLUX DE PRODUCCIÓ.
 
 FLUX (1 fila per pas de fabricació — ha de descriure TOT el procés de principi a fi):
+Un flux de producció és una seqüència de passos que descriuen el procés de fabricació d'un producte, que es pot agrupar amb la mateixa referencia de temps i persones necessàries .
 producte, pas, dia, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
 
 Recursos (màquines/zones/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
@@ -695,22 +696,14 @@ export default function App() {
           </section>
         )}
 
-        {isV && act !== "productes" && !sc.manual && (
-          <div style={{ padding: "12px 24px", borderBottom: `1px solid ${C.b1}`, background: C.s1, fontSize: 11, color: C.t2 }}>
-            💡 S'omple automàticament des de{" "}
-            <strong style={{ color: C.ac, cursor: "pointer" }} onClick={() => setAct("productes")}>📦 Productes</strong>.
-            Fes clic a qualsevol cel·la per editar.
-          </div>
-        )}
-
-        {isV && act !== "productes" && sc.manual && (
+        {isV && act !== "productes" && (
           <div style={{ padding: "12px 24px", borderBottom: `1px solid ${C.b1}`, background: C.s1, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 11, color: C.t2 }}>
-              💡 Els recursos s'afegeixen automàticament des de{" "}
+              💡 S'omple automàticament des de{" "}
               <strong style={{ color: C.ac, cursor: "pointer" }} onClick={() => setAct("productes")}>📦 Productes</strong>.
-              {" "}També pots gestionar-los manualment.
+              {" "}També pots afegir registres manualment.
             </span>
-            <Btn onClick={openManual} style={{ padding: "6px 16px", background: C.acD, border: `1px solid ${C.ac}`, color: C.ac, fontSize: 11, flexShrink: 0, marginLeft: 12 }}>+ Afegir recurs</Btn>
+            <Btn onClick={openManual} style={{ padding: "6px 16px", background: C.acD, border: `1px solid ${C.ac}`, color: C.ac, fontSize: 11, flexShrink: 0, marginLeft: 12 }}>+ Afegir registre</Btn>
           </div>
         )}
 
