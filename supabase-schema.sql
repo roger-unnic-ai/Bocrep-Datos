@@ -35,12 +35,13 @@ create table if not exists recepta (
   comentaris            text
 );
 
--- 3. FARCIT
+-- 3. FARCIT (1 fila per matèria primera dins un codi_farcit)
 create table if not exists farcit (
   id            uuid primary key default gen_random_uuid(),
   created_at    timestamptz default now(),
+  codi_farcit       text,
   codi_nom_mp       text,
-  grams_per_unitat  numeric,
+  kg_per_palet      numeric,
   merma             numeric
 );
 
@@ -64,19 +65,16 @@ create table if not exists flux (
   producte              text,
   pas                   integer,
   dia                   numeric,
+  codi_intervinent      text,
   linia                 text,
   massa                 numeric,
-  temps_per_kg          numeric,
+  temps_per_kg          text,
   persones_necessaries  numeric,
   perfils_de_persona    text,
   es_pot_parar          text,
   prerequisits          text,
   comentaris            text
 );
-
--- Migració: executa aquestes línies si la taula flux ja existia al teu projecte:
--- ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
--- ALTER TABLE flux ADD COLUMN IF NOT EXISTS pas integer;
 
 -- 6. TORNS
 create table if not exists torns (
@@ -86,10 +84,40 @@ create table if not exists torns (
   torn              text,
   hora_inici        text,
   hora_fi           text,
+  torn_2            text,
+  hora_inici_2      text,
+  hora_fi_2         text,
   actiu             text,
   tipus_personal    text,
-  descans           text
+  descans           text,
+  capacitats        text,
+  autoritzacions    text,
+  comentaris        text
 );
+
+-- ══════════════════════════════════════════════════════════
+-- MIGRACIONS (executa si les taules ja existien al teu projecte)
+-- ══════════════════════════════════════════════════════════
+-- FLUX
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS pas integer;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS codi_intervinent text;
+-- Canvi de tipus de temps_per_kg (numèric → text per acceptar "45 min / 150 kg")
+ALTER TABLE flux ALTER COLUMN temps_per_kg TYPE text USING temps_per_kg::text;
+
+-- FARCIT
+ALTER TABLE farcit ADD COLUMN IF NOT EXISTS codi_farcit text;
+ALTER TABLE farcit ADD COLUMN IF NOT EXISTS kg_per_palet numeric;
+-- (la columna antiga 'grams_per_unitat' es manté per retrocompatibilitat; pots eliminar-la quan vulguis:)
+-- ALTER TABLE farcit DROP COLUMN IF EXISTS grams_per_unitat;
+
+-- TORNS
+ALTER TABLE torns ADD COLUMN IF NOT EXISTS torn_2 text;
+ALTER TABLE torns ADD COLUMN IF NOT EXISTS hora_inici_2 text;
+ALTER TABLE torns ADD COLUMN IF NOT EXISTS hora_fi_2 text;
+ALTER TABLE torns ADD COLUMN IF NOT EXISTS capacitats text;
+ALTER TABLE torns ADD COLUMN IF NOT EXISTS autoritzacions text;
+ALTER TABLE torns ADD COLUMN IF NOT EXISTS comentaris text;
 
 -- ══════════════════════════════════════════════════════════
 -- Row Level Security (RLS) — desactivat per simplicitat

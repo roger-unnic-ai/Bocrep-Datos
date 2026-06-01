@@ -38,9 +38,10 @@ const SCHEMAS = {
   farcit: {
     label: "Farcit", icon: "🍫", voice: true,
     fields: [
-      { key: "codi_nom_mp",       label: "Codi / Nom Materia Prima",  type: "text",   req: true },
-      { key: "grams_per_unitat",   label: "Grams per unitat",          type: "number" },
-      { key: "merma",              label: "Merma",                     type: "number" },
+      { key: "codi_farcit",  label: "Codi farcit (R####)",       type: "text",   req: true, placeholder: "R3055" },
+      { key: "codi_nom_mp",  label: "Codi / Nom Matèria Prima",  type: "text",   req: true, placeholder: "M2001 o Ricotta" },
+      { key: "kg_per_palet", label: "Kg per palet",              type: "number" },
+      { key: "merma",        label: "Merma (decimal, 0.03 = 3%)", type: "number" },
     ],
   },
   linies: {
@@ -61,26 +62,33 @@ const SCHEMAS = {
       { key: "producte",             label: "Producte",                     type: "text",   req: true },
       { key: "pas",                  label: "Pas (índex)",                  type: "number" },
       { key: "dia",                  label: "Dia del cicle",                type: "number" },
+      { key: "codi_intervinent",     label: "Massa / Farcit (codi)",        type: "text",   placeholder: "M2001 / R3055" },
       { key: "linia",                label: "Recurs físic",                 type: "text" },
       { key: "massa",                label: "Massa (kg)",                   type: "number" },
-      { key: "temps_per_kg",         label: "Temps per kg",                 type: "number" },
+      { key: "temps_per_kg",         label: "Temps",                        type: "text",   placeholder: "45 min / 150kg" },
       { key: "persones_necessaries", label: "Persones necessàries",         type: "number" },
       { key: "perfils_de_persona",   label: "Perfils de persona",           type: "text" },
       { key: "es_pot_parar",         label: "Es pot parar (sí/no)",         type: "select", options: ["Sí", "No"] },
-      { key: "prerequisits",         label: "Prerequisits (pas anteriors)", type: "text" },
+      { key: "prerequisits",         label: "Prerequisits",                 type: "text",   placeholder: "Finalitzar M2001" },
       { key: "comentaris",           label: "Comentaris",                   type: "text" },
     ],
   },
   torns: {
     label: "Torns", icon: "🕐", voice: false,
     fields: [
-      { key: "persona",          label: "Persona",          type: "text",   req: true },
-      { key: "torn",             label: "Torn",             type: "text" },
-      { key: "hora_inici",       label: "Hora inici",       type: "text",   placeholder: "06:00" },
-      { key: "hora_fi",          label: "Hora fi",          type: "text",   placeholder: "14:00" },
-      { key: "actiu",            label: "Actiu (sí/no)",    type: "select", options: ["Sí", "No"] },
-      { key: "tipus_personal",   label: "Tipus personal",   type: "text" },
-      { key: "descans",          label: "Descans",          type: "text" },
+      { key: "persona",          label: "Persona",                    type: "text",   req: true },
+      { key: "torn",             label: "Torn 1",                     type: "text",   placeholder: "Completo Matí 1" },
+      { key: "hora_inici",       label: "Hora inici 1",               type: "text",   placeholder: "06:00" },
+      { key: "hora_fi",          label: "Hora fi 1",                  type: "text",   placeholder: "14:00" },
+      { key: "torn_2",           label: "Torn 2 (rotatiu)",           type: "text",   placeholder: "Completo Tarda 1" },
+      { key: "hora_inici_2",     label: "Hora inici 2",               type: "text",   placeholder: "14:00" },
+      { key: "hora_fi_2",        label: "Hora fi 2",                  type: "text",   placeholder: "22:00" },
+      { key: "actiu",            label: "Actiu (sí/no)",              type: "select", options: ["Sí", "No"] },
+      { key: "tipus_personal",   label: "Tipus personal",             type: "text",   placeholder: "Directa / Indirecte / Cocinero / Encarregat" },
+      { key: "descans",          label: "Descans",                    type: "text",   placeholder: "15 minuts" },
+      { key: "capacitats",       label: "Capacitats",                 type: "text",   placeholder: "TOTAS / NO ENROTLLA..." },
+      { key: "autoritzacions",   label: "Autoritzacions",             type: "text",   placeholder: "DM (Detector Metalls)" },
+      { key: "comentaris",       label: "Comentaris",                 type: "text" },
     ],
   },
 };
@@ -159,12 +167,22 @@ const SECONDARY_CHECKS = [
       row.codi_farcit === existing.codi_farcit,
   },
   {
-    // Flux: 1 fila per (producte + pas). Si pas no existeix, fallback a (producte + dia)
+    // Farcit: 1 fila per (codi_farcit + codi_nom_mp)
+    table: 'farcit',
+    matchFn: (row, existing) =>
+      row.codi_farcit != null && existing.codi_farcit != null &&
+      row.codi_farcit === existing.codi_farcit &&
+      fuzzyMatch(row.codi_nom_mp, existing.codi_nom_mp),
+  },
+  {
+    // Flux: 1 fila per (producte + pas). Si pas no existeix, fallback a (producte + dia + codi_intervinent)
     table: 'flux',
     matchFn: (row, existing) => {
       if (row.pas != null && existing.pas != null)
         return fuzzyMatch(row.producte, existing.producte) && String(row.pas) === String(existing.pas)
-      return fuzzyMatch(row.producte, existing.producte) && String(row.dia) === String(existing.dia)
+      return fuzzyMatch(row.producte, existing.producte) &&
+        String(row.dia) === String(existing.dia) &&
+        (row.codi_intervinent || '') === (existing.codi_intervinent || '')
     },
   },
 ]
@@ -249,20 +267,84 @@ const PROMPT_PROD_RECEPTA = `Ets un assistent expert en producció alimentària 
 
 L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les dades per a TRES TAULES:
 
+═══════════════════════════════════════════
 1. PRODUCTES (1 fila per producte):
-   producte, grup, unitats_per_palet, caixes_per_palet, unitats_per_caixa, kg_massa_palet, codi_massa, kg_farcit_palet, codi_farcit, dies_permesos, incompatible_amb, comentaris
-   → Dies permesos: Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge. Format: "Dll-Dm-Dc"
+═══════════════════════════════════════════
+Camps i FORMATS exactes:
+- 'producte'           text   → codi o identificador del producte (ex: "24155536")
+- 'grup'               text   → nom comercial/descriptiu (ex: "Crepes Salados 110gr")
+- 'unitats_per_palet'  number → ex: 4420
+- 'caixes_per_palet'   number → ex: 221
+- 'unitats_per_caixa'  number → ex: 20
+- 'kg_massa_palet'     number → kg de massa per palet (ex: 335.01)
+- 'codi_massa'         text   → codi de la massa, format M#### (ex: "M0002")
+- 'kg_farcit_palet'    number → kg de farcit per palet (ex: 328.01)
+- 'codi_farcit'        text   → codi del farcit, format R#### (ex: "R3055")
+- 'dies_permesos'      text   → dies de la setmana en què es pot fabricar.
+                                 Format preferent: "Dll-Dm-Dc" (Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge).
+                                 Si l'usuari dicta noms complets, accepta també "Dimecres-Dijous-Divendres".
+- 'incompatible_amb'   text   → text lliure descrivint productes/famílies incompatibles
+                                 (ex: "No es poden fabricar altres crepes salats ni rolls. No es poden fabricar altres farcits amb formatges.")
+- 'comentaris'         text
 
+═══════════════════════════════════════════
 2. RECEPTA (1 fila per ingredient de farcit del producte):
-   producte, codi_farcit, grams_per_unitat_farcit, merma_farcit, codi_massa, grams_per_unit_massa, merma_massa, comentaris
-   → Si el producte té MÚLTIPLES ingredients de farcit (codis_farcit), crea UNA FILA per cada codi_farcit, amb els seus grams i merma específics.
-   → codi_massa i les seves dades (grams_per_unit_massa, merma_massa) es repeteixen a cada fila si és el mateix per a totes.
-   → Mermes en percentatge (ex: 3 = 3%).
+═══════════════════════════════════════════
+Camps i FORMATS:
+- 'producte'                text   → MATEIX codi de producte que a PRODUCTES (ex: "24155536")
+- 'codi_farcit'             text   → R#### (ex: "R3055")
+- 'grams_per_unitat_farcit' number → grams de farcit per unitat final (ex: 72)
+- 'merma_farcit'            number → DECIMAL entre 0 i 1 (ex: 0.01 = 1%, 0.248 = 24.8%). MAI percentatge sencer.
+- 'codi_massa'              text   → M#### (ex: "M0002")
+- 'grams_per_unit_massa'    number → grams de massa per unitat final (ex: 40)
+- 'merma_massa'             number → DECIMAL entre 0 i 1 (ex: 0.248 = 24.8%)
+- 'comentaris'              text
 
-3. FARCIT (1 fila per matèria primera de farcit):
-   codi_nom_mp, grams_per_unitat, merma
+Regles RECEPTA:
+- Si el producte té MÚLTIPLES farcits (codis_farcit diferents) → crea UNA FILA per cada codi_farcit amb els seus grams i merma específics.
+- 'codi_massa' i les seves dades (grams_per_unit_massa, merma_massa) es repeteixen a cada fila si la massa és la mateixa per a totes.
+- Si dicta percentatges ("3 per cent", "24,8%"), DIVIDEIX per 100 i registra com a decimal.
 
-Productes ja existents al sistema (no duplicar): {{EXISTING_PRODUCTS}}
+═══════════════════════════════════════════
+3. FARCIT (1 fila per matèria primera dins un codi_farcit):
+═══════════════════════════════════════════
+Camps i FORMATS:
+- 'codi_farcit'   text   → R#### a què pertany la matèria primera (ex: "R3055")
+- 'codi_nom_mp'   text   → codi M#### o nom de la matèria primera (ex: "M2001", "Ricotta")
+- 'kg_per_palet'  number → kg d'aquesta matèria primera per palet de producte (ex: 142.03)
+- 'merma'         number → DECIMAL entre 0 i 1 (ex: 0.03 = 3%, 0.65 = 65%)
+
+Regles FARCIT:
+- Un codi_farcit (ex: R3055) està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
+- Exemple R3055: M2001 (142.03 kg, 0.03), M3006 (228.67 kg, 0.65), M4007 (34.23 kg, 0.08), M1010 (23.62 kg, 0), Ricotta (49.2 kg, 0).
+
+═══════════════════════════════════════════
+EXEMPLE COMPLET (producte 24155536, "Crepes Salados 110gr"):
+═══════════════════════════════════════════
+{
+  "productes": [{
+    "producte": "24155536", "grup": "Crepes Salados 110gr",
+    "unitats_per_palet": 4420, "caixes_per_palet": 221, "unitats_per_caixa": 20,
+    "kg_massa_palet": 335.01, "codi_massa": "M0002",
+    "kg_farcit_palet": 328.01, "codi_farcit": "R3055",
+    "dies_permesos": "Dc-Dj-Dv",
+    "incompatible_amb": "No es poden fabricar altres crepes salats ni rolls.",
+    "comentaris": null
+  }],
+  "recepta": [{
+    "producte": "24155536", "codi_farcit": "R3055",
+    "grams_per_unitat_farcit": 72, "merma_farcit": 0.01,
+    "codi_massa": "M0002", "grams_per_unit_massa": 40, "merma_massa": 0.248,
+    "comentaris": null
+  }],
+  "farcit": [
+    { "codi_farcit": "R3055", "codi_nom_mp": "M2001",   "kg_per_palet": 142.03, "merma": 0.03 },
+    { "codi_farcit": "R3055", "codi_nom_mp": "M3006",   "kg_per_palet": 228.67, "merma": 0.65 },
+    { "codi_farcit": "R3055", "codi_nom_mp": "Ricotta", "kg_per_palet": 49.2,   "merma": 0 }
+  ]
+}
+
+Productes ja existents al sistema (NO duplicar — fes servir EL MATEIX 'producte'): {{EXISTING_PRODUCTS}}
 
 REGLES ESTRICTES:
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
@@ -277,26 +359,49 @@ const PROMPT_FLUX = `Ets un assistent expert en producció alimentària industri
 L'usuari ha dictat informació sobre el producte "{{PROPOSED_PRODUCTE}}". Extreu tots els PASSOS DEL FLUX DE PRODUCCIÓ.
 
 FLUX (1 fila per pas de fabricació — ha de descriure TOT el procés de principi a fi):
-Un flux de producció és una seqüència de passos que descriuen el procés de fabricació d'un producte, que es pot agrupar amb la mateixa referencia de temps i persones necessàries .
-producte, pas, dia, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
+producte, pas, dia, codi_intervinent, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
 
 Recursos (màquines/zones/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
 
-CAMPS DEL FLUX:
-- 'producte': nom exacte del producte — ha de ser IDÈNTIC a totes les files.
-- 'pas': índex seqüencial global del pas en tot el procés (1, 2, 3...). Serveix per ordenar i per referenciar a prerequisits. Cada pas té un número únic.
-- 'dia': dia real del cicle de producció en que s'executa el pas (ex: dia 1, dia 2...). S'extreu del que es menciona a l'àudio. Si no es menciona explícitament, dedueix-lo de l'ordre lògic del procés.
-- 'linia': nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas. null si el pas no ocupa cap recurs físic (esperes, controls, tasques administratives, emmagatzematge).
-- 'massa': kg de massa del producte que intervenen en aquest pas. null si no aplica.
-- 'temps_per_kg': minuts necessaris per processar 1 kg. null si no s'especifica.
-- 'persones_necessaries': nombre de persones necessàries.
-- 'perfils_de_persona': tipus de personal (ex: "operari", "tècnic").
-- 'es_pot_parar': "Sí" si el procés es pot interrompre en aquest punt, "No" si ha de ser continu.
-- 'prerequisits': valors 'pas' dels passos anteriors que han d'estar ACABATS abans que aquest pugui iniciar (ex: "1", "1,2"). null si no depèn de cap pas anterior.
+═══════════════════════════════════════════
+CAMPS I FORMATS:
+═══════════════════════════════════════════
+- 'producte'             text   → MATEIX codi de producte a TOTES les files (ex: "24155536").
+- 'pas'                  number → índex seqüencial global del pas (1, 2, 3...). Cada pas té un número únic. Serveix per ordenar.
+- 'dia'                  number → dia real del cicle de producció (ex: 1, 2). El mateix dia agrupa múltiples passos. Si no es menciona, dedueix-lo de l'ordre lògic.
+- 'codi_intervinent'     text   → codi de la matèria principal del pas, format M#### o R#### (ex: "M2001", "R3055", "M0002").
+                                   Si el pas és una variant del mateix codi (neteja, subtasca), pots afegir sufix decimal: "M2001.1", "M3006.2".
+                                   null si el pas no està lligat a una matèria/farcit concret (ex: "Preparació de carros", "Encaixat / Paletització").
+- 'linia'                text   → nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas (ex: "Olla mediana", "Freidora", "Turmix Grande / Balança").
+                                   null si el pas no ocupa cap recurs físic concret (esperes, controls, administratiu).
+- 'massa'                number → kg de massa/farcit del producte que intervenen en aquest pas. null si no aplica.
+- 'temps_per_kg'         text   → TEXT LLIURE amb el temps real expressat tal com es diu (ex: "45 minuts / 150 kg", "15 minuts", "1400 unidades / hora", "180 minutos", "68 cajas / hora", "15 minutos / 75 cajas"). null si no s'especifica.
+- 'persones_necessaries' number → nombre de persones (ex: 1, 3, 0).
+- 'perfils_de_persona'   text   → tipus de personal (ex: "Cocinero", "Cocinero / Directa", "Encarregat / Indirecte / Directa", "Qualsevol").
+- 'es_pot_parar'         text   → "Sí" si el procés es pot interrompre, "No" si ha de ser continu.
+- 'prerequisits'         text   → TEXT LLIURE descrivint què ha d'estar acabat abans (ex: "Finalitzar M2001", "Aigua a 90 graus", "Mezcla R3055 acabada", "Producció acabada", "Línia neta i muntada"). null si no depèn de res.
+- 'comentaris'           text   → notes addicionals (ex: "Màxim 60 kg per container", "Batut: mínim 90 kg / màxim 300 kg", "Palet màxim de 221 caixes").
 
+═══════════════════════════════════════════
+EXEMPLE (extracte del flux real del producte 24155536):
+═══════════════════════════════════════════
+{
+  "flux": [
+    { "producte": "24155536", "pas": 1, "dia": 1, "codi_intervinent": "M2001",   "linia": "Olla mediana",                        "massa": 150, "temps_per_kg": "45 minuts / 150 kg",   "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null },
+    { "producte": "24155536", "pas": 2, "dia": 1, "codi_intervinent": "M2001.1", "linia": "Limpieza Olla mediana",               "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M2001",          "comentaris": null },
+    { "producte": "24155536", "pas": 3, "dia": 1, "codi_intervinent": "M2001.2", "linia": "Limpieza containers",                 "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M2001",          "comentaris": "Màxim 60 kg per container" },
+    { "producte": "24155536", "pas": 8, "dia": 1, "codi_intervinent": null,      "linia": "Preparació de carros",                "massa": null,"temps_per_kg": "40 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Qualsevol",               "es_pot_parar": "Sí", "prerequisits": null,                       "comentaris": "20 minuts per carro" },
+    { "producte": "24155536", "pas": 9, "dia": 2, "codi_intervinent": "R3055",   "linia": "Mezcla manual (remo)",                "massa": null,"temps_per_kg": "60 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "Sí", "prerequisits": "Afegir Ricotta",            "comentaris": "18 minuts per container" },
+    { "producte": "24155536", "pas": 13, "dia": 2, "codi_intervinent": null,     "linia": "Fabricat Producte / carros / tunel",  "massa": null,"temps_per_kg": "1400 unidades / hora",  "persones_necessaries": 3, "perfils_de_persona": "Encarregat / Indirecte / Directa", "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null }
+  ]
+}
+
+═══════════════════════════════════════════
 REGLES:
-- MÚLTIPLES RECURSOS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas' i 'dia').
-- Inclou SEMPRE un pas final (el 'pas' més alt) que representi la sortida o producte acabat.
+═══════════════════════════════════════════
+- MÚLTIPLES RECURSOS PARAL·LELS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas', 'dia' i 'codi_intervinent').
+- SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M2001 → M2001.1, M2001.2...). El 'pas' segueix sent un índex global únic.
+- Inclou SEMPRE un pas final que representi la sortida/producte acabat (ex: "Encaixat / Paletització").
 - Retorna ÚNICAMENT: {"flux":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -310,19 +415,41 @@ Recursos ja existents al sistema (NO tornar a crear-los): {{EXISTING_RESOURCES}}
 
 Analitza els passos i identifica els RECURSOS NOUS que apareixen al flux i que NO existeixen encara al sistema.
 
-RECURSOS/LÍNIES (NOMÉS els nous — els que no estan ja a la llista d'existents):
-linia, tipus, descripcio, temps_preparacio, temps_neteja, temps_espera, comentaris
+═══════════════════════════════════════════
+CAMPS I FORMATS (NOMÉS els recursos nous):
+═══════════════════════════════════════════
+- 'linia'            text   → nom exacte del recurs tal com apareix al flux (ex: "Olla mediana", "Olla grande", "Freidora", "Turmix Grande / Balança", "Máquina 4", "Detector Metalls").
+- 'tipus'            text   → categoria física: "màquina", "forn", "olla", "freidora", "turmix", "balança", "cambra", "zona", "container", "fogó", "rustidor", "abatidor"...
+- 'descripcio'       text   → descripció breu de què fa o per a què s'utilitza. null si no es pot deduir.
+- 'temps_preparacio' number → minuts de preparació/posada en marxa abans d'usar-lo (ex: 60 per "Preparación Máquina 4"). null si no s'especifica.
+- 'temps_neteja'     number → minuts de neteja després d'usar-lo (ex: 15, 30, 180). null si no s'especifica.
+- 'temps_espera'     number → minuts d'espera fins poder tornar-lo a utilitzar (refredament, etc.). null si no s'especifica.
+- 'comentaris'       text   → notes (ex: "Capacitat 35 kg / hora", "Mínim 90 kg / màxim 300 kg").
 
-IMPORTANT — QUÈ ÉS UN RECURS:
-- Un RECURS és un element FÍSIC amb capacitat limitada: màquina, forn, batedora, motllo, zona de producció, equip. No es pot usar simultàniament per a més d'una tasca (o té un límit de capacitat).
-- Exemples de recursos VÀLIDS: "Forn 1", "Batedora Industrial", "Cambra de Fermentació", "Zona d'Envasat".
-- NO SÓN RECURSOS (no els registres): "Espera", "Magatzem", "Control de qualitat", "Emmagatzematge", qualsevol pas sense recurs físic (les files del flux amb 'linia: null' no generen recursos).
-- Ignora completament totes les files del flux on 'linia' sigui null — no hi ha cap recurs que registrar per a aquells passos.
-- 'temps_preparacio', 'temps_neteja', 'temps_espera': en minuts. null si no s'especifica.
-- 'tipus': categoria física del recurs (ex: "forn", "batedora", "màquina", "cambra", "zona").
+═══════════════════════════════════════════
+QUÈ ÉS UN RECURS (regles estrictes):
+═══════════════════════════════════════════
+- Un RECURS és un element FÍSIC amb capacitat limitada: màquina, olla, forn, freidora, batedora, rustidor, container, zona de producció, equip. No es pot usar simultàniament per a més d'una tasca (o té un límit de capacitat).
+- Exemples VÀLIDS extrets d'un flux real: "Olla mediana", "Olla grande", "Freidora / Balanzas / Rustideros", "Fogón / Olla escaldar", "Turmix Grande / Balança", "Máquina 4", "Detector Metalls", "Encaixadora".
+- NO SÓN RECURSOS (no els registres):
+  · "Espera", "Magatzem", "Emmagatzematge", "Control" — només estats.
+  · Tasques administratives, preparacions sense màquina concreta (ex: "Preparació de carros", "Preparació etiquetes") → 'linia' del pas serà null.
+  · Tasques de NETEJA d'un recurs ja registrat (ex: "Limpieza Olla mediana") → NO és un recurs nou; la neteja es modela amb 'temps_neteja' del recurs original.
+- IMPORTANT: si una 'linia' del flux és una neteja (comença per "Limpieza", "Neteja"), NO la registris com a recurs separat. Suma els seus minuts al 'temps_neteja' del recurs original (ex: "Limpieza Olla mediana" → afegir 15 min a 'temps_neteja' del recurs "Olla mediana").
+- Ignora completament totes les files del flux on 'linia' sigui null.
 - Si TOTS els recursos del flux amb 'linia' no null ja existeixen → retorna {"linies":[]}.
 
-REGLES:
+═══════════════════════════════════════════
+EXEMPLE:
+═══════════════════════════════════════════
+Si al flux apareixen "Olla mediana" (45 min) i "Limpieza Olla mediana" (15 min), i no existeix encara:
+{
+  "linies": [
+    { "linia": "Olla mediana", "tipus": "olla", "descripcio": "Olla de cocció mitjana", "temps_preparacio": null, "temps_neteja": 15, "temps_espera": null, "comentaris": null }
+  ]
+}
+
+REGLES FINALS:
 - Retorna ÚNICAMENT: {"linies":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
