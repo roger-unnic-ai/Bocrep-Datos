@@ -577,7 +577,7 @@ export default function App() {
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: "claude-haiku-4-5", max_tokens: 16000,
+          model: "claude-sonnet-4-5", max_tokens: 16000,
           system: systemPrompt,
           messages: [{ role: "user", content: text }],
         }),
