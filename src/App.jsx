@@ -490,6 +490,7 @@ export default function App() {
   const [fluxFilter, setFluxFilter] = useState("");
   const rRef = useRef(null);
   const eRef = useRef(null);
+  const isStoppingRef = useRef(false);
 
   const sc = SCHEMAS[act];
   const isV = sc.voice;
@@ -501,24 +502,57 @@ export default function App() {
   const startRec = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setStat("⚠️ Usa Chrome per reconeixement de veu."); return; }
-    const r = new SR(); r.lang = "ca-ES"; r.continuous = true; r.interimResults = true;
+
+    isStoppingRef.current = false;
     let acc = "";
-    r.onresult = e => {
-      let im = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) acc += e.results[i][0].transcript + " ";
-        else im += e.results[i][0].transcript;
-      }
-      setTxt(acc); setInterim(im);
+
+    const makeR = () => {
+      const r = new SR();
+      r.lang = "ca-ES"; r.continuous = true; r.interimResults = true;
+
+      r.onresult = e => {
+        let im = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) acc += e.results[i][0].transcript + " ";
+          else im += e.results[i][0].transcript;
+        }
+        setTxt(acc); setInterim(im);
+      };
+
+      r.onerror = e => {
+        // "no-speech" i "aborted" (parada manual) no son errors reals
+        if (e.error === "no-speech" || e.error === "aborted") return;
+        setStat(`⚠️ Error de veu: ${e.error}`);
+      };
+
+      r.onend = () => {
+        if (isStoppingRef.current) { setIsRec(false); return; }
+        // El browser ha parat per silenci — reiniciar automàticament
+        setStat("🎙️ Micròfon actiu — pots continuar parlant...");
+        try {
+          const newR = makeR();
+          rRef.current = newR;
+          newR.start();
+        } catch {
+          setIsRec(false);
+          setStat("⚠️ Micròfon desconnectat. Prem «Gravar» per continuar.");
+        }
+      };
+
+      return r;
     };
-    r.onerror = e => { if (e.error !== "no-speech") setStat(`Error de veu: ${e.error}`); };
-    r.onend = () => setIsRec(false);
+
+    const r = makeR();
     rRef.current = r; r.start();
     setIsRec(true); setTxt(""); setInterim(""); setPend(null);
     setStat("🎙️ Escoltant... Descriu el producte complet.");
   }, []);
 
-  const stopRec = useCallback(() => { rRef.current?.stop(); setIsRec(false); setInterim(""); }, []);
+  const stopRec = useCallback(() => {
+    isStoppingRef.current = true;
+    rRef.current?.stop();
+    setIsRec(false); setInterim("");
+  }, []);
 
   /* ─── AI Parse — pipeline de 3 crides sequencials ─── */
   const parseVoice = useCallback(async () => {
