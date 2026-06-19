@@ -491,12 +491,14 @@ export default function App() {
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
+  const txtRef = useRef("");
 
   const sc = SCHEMAS[act];
   const isV = sc.voice;
   const pTabs = pend ? CASCADE.filter(t => pend[t]?.length > 0) : [];
 
   useEffect(() => { if (ec && eRef.current) { eRef.current.focus(); eRef.current.select(); } }, [ec]);
+  useEffect(() => { txtRef.current = txt; }, [txt]);
 
   /* ─── Speech ─── */
   const startRec = useCallback(() => {
@@ -504,7 +506,7 @@ export default function App() {
     if (!SR) { setStat("⚠️ Usa Chrome per reconeixement de veu."); return; }
 
     isStoppingRef.current = false;
-    let acc = "";
+    let acc = txtRef.current; // Acumula sobre el text ja existent (veu o enganxat)
 
     const makeR = () => {
       const r = new SR();
@@ -516,7 +518,7 @@ export default function App() {
           if (e.results[i].isFinal) acc += e.results[i][0].transcript + " ";
           else im += e.results[i][0].transcript;
         }
-        setTxt(acc); setInterim(im);
+        setTxt(acc); txtRef.current = acc; setInterim(im);
       };
 
       r.onerror = e => {
@@ -544,8 +546,8 @@ export default function App() {
 
     const r = makeR();
     rRef.current = r; r.start();
-    setIsRec(true); setTxt(""); setInterim(""); setPend(null);
-    setStat("🎙️ Escoltant... Descriu el producte complet.");
+    setIsRec(true); setInterim("");
+    setStat("🎙️ Micròfon actiu — parla quan vulguis.");
   }, []);
 
   const stopRec = useCallback(() => {
@@ -770,7 +772,7 @@ export default function App() {
             const active = key === act; const count = data[key].length;
             return (
               <div key={key}
-                onClick={() => { setAct(key); setPend(null); setTxt(""); setEc(null); setMr(null); setStat(""); setFluxFilter(""); }}
+                onClick={() => { setAct(key); setPend(null); setTxt(""); txtRef.current = ""; setEc(null); setMr(null); setStat(""); setFluxFilter(""); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 10,
                   padding: sb ? "10px 16px" : "10px 15px", cursor: "pointer",
@@ -821,11 +823,11 @@ export default function App() {
               ))}
             </p>
 
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
               {!isRec ? (
-                <Btn onClick={startRec} style={{ padding: "9px 22px", background: `linear-gradient(135deg, ${C.r}, #DC2626)`, border: "none", color: "#fff" }}>⏺ Gravar veu</Btn>
+                <Btn onClick={startRec} style={{ padding: "9px 22px", background: `linear-gradient(135deg, ${C.r}, #DC2626)`, border: "none", color: "#fff" }}>⏺ Micròfon</Btn>
               ) : (
-                <Btn onClick={stopRec} style={{ padding: "9px 22px", background: C.rD, border: `2px solid ${C.r}`, color: C.r, animation: "pulse 1.5s infinite" }}>⏹ Aturar</Btn>
+                <Btn onClick={stopRec} style={{ padding: "9px 22px", background: C.rD, border: `2px solid ${C.r}`, color: C.r, animation: "pulse 1.5s infinite" }}>⏹ Parar mic</Btn>
               )}
               <Btn onClick={parseVoice} disabled={!txt.trim() || parsing}
                 style={{
@@ -837,20 +839,40 @@ export default function App() {
                 }}>
                 {parsing ? "⏳ Processant..." : "🤖 Processar → Totes les taules"}
               </Btn>
+              {txt.trim() && !parsing && (
+                <Btn onClick={() => { setTxt(""); txtRef.current = ""; setPend(null); setStat(""); setInterim(""); }}
+                  style={{ padding: "9px 14px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t3, fontSize: 11 }}>
+                  🗑 Netejar
+                </Btn>
+              )}
             </div>
 
-            {(txt || interim || isRec) && (
-              <div style={{ padding: 12, background: C.bg, borderRadius: 8, border: `1px solid ${isRec ? C.r : C.b1}`, fontSize: 12, lineHeight: 1.7, minHeight: 40, position: "relative" }}>
-                {isRec && <span style={{ position: "absolute", top: 10, right: 12, width: 9, height: 9, background: C.r, borderRadius: "50%", animation: "pulse 1s infinite" }} />}
-                <span>{txt}</span><span style={{ color: C.t3, fontStyle: "italic" }}>{interim}</span>
-                {!txt && !interim && <span style={{ color: C.t3 }}>Esperant veu...</span>}
+            {/* Textarea sempre visible — pega, escriu o dicta */}
+            <textarea
+              value={txt}
+              onChange={e => { setTxt(e.target.value); txtRef.current = e.target.value; }}
+              style={{
+                width: "100%", padding: 10,
+                background: C.bg,
+                border: `1px solid ${isRec ? C.r : C.b1}`,
+                borderRadius: 8, color: C.t1, fontSize: 12, fontFamily: "inherit",
+                resize: "vertical", minHeight: 80, boxSizing: "border-box",
+                outline: "none", lineHeight: 1.7,
+                transition: "border-color 0.2s",
+              }}
+              placeholder="Enganxa text aquí, escriu manualment o usa el micròfon... Tot s'acumula fins que prems Processar."
+            />
+
+            {/* Interim del micro mentre grava */}
+            {isRec && interim && (
+              <div style={{ marginTop: 6, padding: "6px 10px", background: C.rD, border: `1px solid ${C.r}`, borderRadius: 6, fontSize: 12, color: C.t2, fontStyle: "italic", lineHeight: 1.6 }}>
+                <span style={{ display: "inline-block", width: 8, height: 8, background: C.r, borderRadius: "50%", marginRight: 8, animation: "pulse 1s infinite" }} />
+                {interim}
               </div>
             )}
 
-            {txt && !isRec && (
-              <textarea value={txt} onChange={e => setTxt(e.target.value)}
-                style={{ width: "100%", marginTop: 8, padding: 10, background: C.bg, border: `1px solid ${C.b1}`, borderRadius: 8, color: C.t1, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 50, boxSizing: "border-box" }}
-                placeholder="Pots editar el text manualment..." />
+            {isRec && !interim && (
+              <div style={{ marginTop: 6, fontSize: 11, color: C.t3, fontStyle: "italic" }}>🎙️ Escoltant...</div>
             )}
 
             {stat && <div style={{ marginTop: 10, fontSize: 11, lineHeight: 1.5, color: stat.includes("❌") ? C.r : stat.includes("✅") ? C.g : C.o }}>{stat}</div>}
