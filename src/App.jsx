@@ -20,6 +20,7 @@ const SCHEMAS = {
       { key: "dies_permesos",     label: "Dies permesos (Dll-Dm-Dc)",  type: "text" },
       { key: "incompatible_amb",  label: "Incompatible amb (llista)",   type: "text" },
       { key: "comentaris",        label: "Comentaris",                 type: "text" },
+      { key: "transcripcio",      label: "Transcripció",               type: "text",  hidden: true },
     ],
   },
   recepta: {
@@ -488,6 +489,7 @@ export default function App() {
   const [pvt, setPvt] = useState("productes");
   const [changeLog, setChangeLog] = useState([]);
   const [fluxFilter, setFluxFilter] = useState("");
+  const [expandedTx, setExpandedTx] = useState(new Set());
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
@@ -616,7 +618,7 @@ export default function App() {
       );
 
       const parsed = {
-        productes: res1.productes || [],
+        productes: (res1.productes || []).map(p => ({ ...p, transcripcio: text })),
         recepta:   res1.recepta   || [],
         farcit:    res1.farcit    || [],
         flux:      res2.flux      || [],
@@ -665,6 +667,10 @@ export default function App() {
         const merged = await mergeRow(t, row._existingId, row);
         if (merged !== null) nUpdated++;
         else nErrors++;
+        // Sempre sobreescriure la transcripcio amb la darrera gravació
+        if (t === 'productes' && row.transcripcio) {
+          await updateCell('productes', row._existingId, 'transcripcio', row.transcripcio);
+        }
       }
     }
 
@@ -955,7 +961,7 @@ export default function App() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead><tr>
                   <th style={{ ...thS, color: C.o, width: 80 }}>Acció</th>
-                  {SCHEMAS[pvt].fields.map(f => <th key={f.key} style={{ ...thS, color: C.o }}>{f.label}</th>)}
+                  {SCHEMAS[pvt].fields.filter(f => !f.hidden).map(f => <th key={f.key} style={{ ...thS, color: C.o }}>{f.label}</th>)}
                   <th style={{ ...thS, width: 30 }} />
                 </tr></thead>
                 <tbody>
@@ -967,7 +973,7 @@ export default function App() {
                           : <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: C.gD, color: C.g, fontWeight: 600 }}>✦ Nou</span>
                         }
                       </td>
-                      {SCHEMAS[pvt].fields.map(f => (
+                      {SCHEMAS[pvt].fields.filter(f => !f.hidden).map(f => (
                         <td key={f.key} onClick={() => editPendCell(pvt, ri, f.key)}
                           style={{ padding: "6px 10px", borderBottom: `1px solid ${C.b1}`, color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3, cursor: "pointer" }}>
                           {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
@@ -1028,50 +1034,88 @@ export default function App() {
               </div>
             );
 
+            const visibleFields = sc.fields.filter(f => !f.hidden);
+            const hasTx = act === "productes";
+            const txColSpan = 1 + visibleFields.length + 2; // # + fields + 📄 col + 🗑 col
+
+            const toggleTx = (id) => setExpandedTx(prev => {
+              const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s;
+            });
+
             return (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead><tr>
                   <th style={{ ...thS, width: 36, textAlign: "center" }}>#</th>
-                  {sc.fields.map(f => <th key={f.key} style={thS}>{f.label}</th>)}
+                  {hasTx && <th style={{ ...thS, width: 28 }} title="Transcripció" />}
+                  {visibleFields.map(f => <th key={f.key} style={thS}>{f.label}</th>)}
                   <th style={{ ...thS, width: 36 }} />
                 </tr></thead>
                 <tbody>
-                  {displayRows.map(({ row, idx }, ri) => (
-                    <tr key={row.id || ri}
-                      onMouseEnter={e => e.currentTarget.style.background = C.s2}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                      <td style={{ ...tdS, textAlign: "center", color: C.t3, fontSize: 10 }}>{ri + 1}</td>
-                      {sc.fields.map(f => {
-                        const isEd = ec?.ri === idx && ec?.key === f.key;
-                        return (
-                          <td key={f.key} onClick={() => !isEd && startEdit(idx, f.key, row[f.key])}
-                            style={{ ...tdS, cursor: "pointer", padding: isEd ? "2px 4px" : undefined }}>
-                            {isEd ? (
-                              f.options ? (
-                                <select ref={eRef} value={ev} onChange={e => setEv(e.target.value)} onBlur={commitEdit}
-                                  onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
-                                  style={ceS}>
-                                  <option value="">—</option>{f.options.map(o => <option key={o} value={o}>{o}</option>)}
-                                </select>
-                              ) : (
-                                <input ref={eRef} type={f.type === "number" ? "number" : "text"} value={ev}
-                                  onChange={e => setEv(e.target.value)} onBlur={commitEdit}
-                                  onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
-                                  style={ceS} />
-                              )
-                            ) : (
-                              <span style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
-                                {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
-                              </span>
-                            )}
+                  {displayRows.map(({ row, idx }, ri) => {
+                    const rowId = row.id || ri;
+                    const txOpen = expandedTx.has(rowId);
+                    return (
+                      <>
+                        <tr key={rowId}
+                          onMouseEnter={e => e.currentTarget.style.background = C.s2}
+                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          <td style={{ ...tdS, textAlign: "center", color: C.t3, fontSize: 10 }}>{ri + 1}</td>
+                          {hasTx && (
+                            <td style={{ ...tdS, textAlign: "center" }}>
+                              {row.transcripcio ? (
+                                <span
+                                  onClick={() => toggleTx(rowId)}
+                                  title={txOpen ? "Amagar transcripció" : "Veure transcripció"}
+                                  style={{ cursor: "pointer", fontSize: 13, opacity: txOpen ? 1 : 0.5 }}>
+                                  📄
+                                </span>
+                              ) : null}
+                            </td>
+                          )}
+                          {visibleFields.map(f => {
+                            const isEd = ec?.ri === idx && ec?.key === f.key;
+                            return (
+                              <td key={f.key} onClick={() => !isEd && startEdit(idx, f.key, row[f.key])}
+                                style={{ ...tdS, cursor: "pointer", padding: isEd ? "2px 4px" : undefined }}>
+                                {isEd ? (
+                                  f.options ? (
+                                    <select ref={eRef} value={ev} onChange={e => setEv(e.target.value)} onBlur={commitEdit}
+                                      onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
+                                      style={ceS}>
+                                      <option value="">—</option>{f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                                    </select>
+                                  ) : (
+                                    <input ref={eRef} type={f.type === "number" ? "number" : "text"} value={ev}
+                                      onChange={e => setEv(e.target.value)} onBlur={commitEdit}
+                                      onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEc(null); }}
+                                      style={ceS} />
+                                  )
+                                ) : (
+                                  <span style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
+                                    {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
+                                  </span>
+                                )}
+                              </td>
+                            );
+                          })}
+                          <td style={tdS}>
+                            <span onClick={() => handleDelete(idx)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
                           </td>
-                        );
-                      })}
-                      <td style={tdS}>
-                        <span onClick={() => handleDelete(idx)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
-                      </td>
-                    </tr>
-                  ))}
+                        </tr>
+                        {hasTx && txOpen && row.transcripcio && (
+                          <tr key={`${rowId}-tx`}>
+                            <td colSpan={txColSpan}
+                              style={{ padding: "10px 16px", background: C.s1, borderBottom: `1px solid ${C.b1}` }}>
+                              <div style={{ fontSize: 10, color: C.t3, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Transcripció original</div>
+                              <div style={{ fontSize: 12, color: C.t2, lineHeight: 1.7, whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto" }}>
+                                {row.transcripcio}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    );
+                  })}
                 </tbody>
               </table>
             );

@@ -18,7 +18,8 @@ create table if not exists productes (
   codi_farcit         text,
   dies_permesos       text,
   incompatible_amb    text,
-  comentaris          text
+  comentaris          text,
+  transcripcio        text
 );
 
 -- 2. RECEPTA
@@ -104,6 +105,9 @@ ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS codi_intervinent text;
 -- Canvi de tipus de temps_per_kg (numèric → text per acceptar "45 min / 150 kg")
 ALTER TABLE flux ALTER COLUMN temps_per_kg TYPE text USING temps_per_kg::text;
+
+-- PRODUCTES
+ALTER TABLE productes ADD COLUMN IF NOT EXISTS transcripcio text;
 
 -- FARCIT
 ALTER TABLE farcit ADD COLUMN IF NOT EXISTS codi_farcit text;
