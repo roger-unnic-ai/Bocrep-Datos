@@ -134,25 +134,34 @@ const fuzzyMatch = (a, b) => {
   return false
 }
 
+// exactMatch: només normalització (sense Levenshtein). Per a codis únics: producte, codi_farcit, codi_massa.
+// Evita que "24155536" i "24155537" es confonguin per proximitat de caràcters.
+const exactMatch = (a, b) => {
+  const na = normalizeStr(a), nb = normalizeStr(b)
+  return !!na && !!nb && na === nb
+}
+
 // Taules que defineixen entitats i les taules que les referencien
 const ENTITY_DEFS = [
   {
-    table: 'productes', keyField: 'producte',
+    // producte és un codi únic → exactMatch obligatori per no confondre codis similars
+    table: 'productes', keyField: 'producte', matchFn: exactMatch,
     refs: [
       { table: 'recepta', field: 'producte', clearIfUnresolved: true },
       { table: 'flux', field: 'producte', clearIfUnresolved: true },
     ],
   },
   {
+    // linia és un nom descriptiu → fuzzyMatch per tolerar variants ortogràfiques
     // linia a flux és OPCIONAL (null per a passos sense recurs físic).
-    // La 3a crida IA (PROMPT_LINIES) s'encarrega de crear els recursos nous.
-    table: 'linies', keyField: 'linia',
+    table: 'linies', keyField: 'linia', matchFn: fuzzyMatch,
     refs: [
       { table: 'flux', field: 'linia', clearIfUnresolved: false },
     ],
   },
   {
-    table: 'farcit', keyField: 'codi_nom_mp',
+    // codi_nom_mp pot ser un codi (M####) o un nom comú (Ricotta) → fuzzyMatch per noms
+    table: 'farcit', keyField: 'codi_nom_mp', matchFn: fuzzyMatch,
     refs: [],
   },
 ]
@@ -161,29 +170,32 @@ const ENTITY_DEFS = [
 const SECONDARY_CHECKS = [
   {
     // Recepta: 1 fila per (producte + codi_farcit)
+    // producte i codi_farcit són codis únics → exactMatch per ambdós
     table: 'recepta',
     matchFn: (row, existing) =>
-      fuzzyMatch(row.producte, existing.producte) &&
+      exactMatch(row.producte, existing.producte) &&
       row.codi_farcit != null && existing.codi_farcit != null &&
-      row.codi_farcit === existing.codi_farcit,
+      exactMatch(row.codi_farcit, existing.codi_farcit),
   },
   {
     // Farcit: 1 fila per (codi_farcit + codi_nom_mp)
+    // codi_farcit és un codi únic → exactMatch; codi_nom_mp pot ser nom → fuzzyMatch
     table: 'farcit',
     matchFn: (row, existing) =>
       row.codi_farcit != null && existing.codi_farcit != null &&
-      row.codi_farcit === existing.codi_farcit &&
+      exactMatch(row.codi_farcit, existing.codi_farcit) &&
       fuzzyMatch(row.codi_nom_mp, existing.codi_nom_mp),
   },
   {
-    // Flux: 1 fila per (producte + pas). Si pas no existeix, fallback a (producte + dia + codi_intervinent)
+    // Flux: 1 fila per (producte + pas). Fallback: (producte + dia + codi_intervinent)
+    // producte és un codi únic → exactMatch; codi_intervinent és un codi → exactMatch
     table: 'flux',
     matchFn: (row, existing) => {
+      if (!exactMatch(row.producte, existing.producte)) return false
       if (row.pas != null && existing.pas != null)
-        return fuzzyMatch(row.producte, existing.producte) && String(row.pas) === String(existing.pas)
-      return fuzzyMatch(row.producte, existing.producte) &&
-        String(row.dia) === String(existing.dia) &&
-        (row.codi_intervinent || '') === (existing.codi_intervinent || '')
+        return String(row.pas) === String(existing.pas)
+      return String(row.dia) === String(existing.dia) &&
+        exactMatch(row.codi_intervinent || '', existing.codi_intervinent || '')
     },
   },
 ]
@@ -192,7 +204,7 @@ function resolveCanonicalNames(parsed, dbData) {
   const resolved = JSON.parse(JSON.stringify(parsed))
   const changeLog = [] // { from, to, table }
 
-  for (const { table, keyField, refs } of ENTITY_DEFS) {
+  for (const { table, keyField, matchFn, refs } of ENTITY_DEFS) {
     const existing = dbData[table] || []
     const mapping = {} // normalizeStr(proposedVal) → { canonical, existingId }
 
@@ -201,7 +213,8 @@ function resolveCanonicalNames(parsed, dbData) {
         const val = row[keyField]
         if (!val) return { ...row, _action: 'insert', _existingId: null }
 
-        const match = existing.find(e => fuzzyMatch(val, e[keyField]))
+        // Usa el matchFn específic de cada entitat (exactMatch per codis, fuzzyMatch per noms)
+        const match = existing.find(e => matchFn(val, e[keyField]))
         if (match) {
           const canonical = match[keyField]
           if (normalizeStr(canonical) !== normalizeStr(val)) {
@@ -224,17 +237,15 @@ function resolveCanonicalNames(parsed, dbData) {
         // 1. Coincideix amb una entitat del batch (nova o existent)
         const mapped = mapping[normalizeStr(refVal)]
         if (mapped) return { ...row, [ref.field]: mapped.canonical }
-        // 2. Coincideix directament amb la BD
-        const directMatch = existing.find(e => fuzzyMatch(refVal, e[keyField]))
+        // 2. Coincideix directament amb la BD (usant el matchFn de l'entitat)
+        const directMatch = existing.find(e => matchFn(refVal, e[keyField]))
         if (directMatch) return { ...row, [ref.field]: directMatch[keyField] }
         // 3. No resolt
         if (ref.clearIfUnresolved) {
-          // Referència invàlida: buidar el camp (p.ex. producte inexistent)
           return { ...row, [ref.field]: '' }
         }
         if (ref.autoAdd) {
-          // Camp obligatori (p.ex. linia): crear l'entitat automàticament si no existeix al batch
-          const alreadyInBatch = resolved[table]?.some(e => fuzzyMatch(e[keyField], refVal))
+          const alreadyInBatch = resolved[table]?.some(e => matchFn(e[keyField], refVal))
           if (!alreadyInBatch) {
             resolved[table] = [...(resolved[table] || []), { [keyField]: refVal, _action: 'insert', _existingId: null }]
             mapping[normalizeStr(refVal)] = { canonical: refVal, existingId: null }
