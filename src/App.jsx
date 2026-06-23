@@ -680,7 +680,7 @@ export default function App() {
     if (nUpdated) parts.push(`${nUpdated} actualitzats`);
     const errTxt = nErrors ? `  ⚠️ ${nErrors} errors (consola)` : '';
     setStat(`✅ ${parts.join(' · ') || 'Sense canvis nous'}${errTxt}`);
-  }, [pend, insertRows, mergeRow]);
+  }, [pend, insertRows, mergeRow, updateCell]);
 
   const editPendCell = (table, ri, key) => {
     const val = prompt(`Editar "${key}":`, pend[table][ri][key] ?? "");

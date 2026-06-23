@@ -96,10 +96,31 @@ export function useDatabase() {
     return inserted
   }, [])
 
-  // Merge new data into an existing row — only fills fields that are currently empty/null
+  // Merge new data into an existing row — only fills fields that are currently empty/null.
+  // Always reads the current row from Supabase (not from local state) to avoid stale-closure
+  // issues when mergeRow is called multiple times in the same confirmAll loop.
   const mergeRow = useCallback(async (tableKey, rowId, newData) => {
-    const existing = data[tableKey]?.find(r => r.id === rowId)
-    if (!existing) return null
+    let existing
+
+    if (supabase) {
+      // Fetch the live row so we never work from a stale React state snapshot
+      const { data: rows, error } = await supabase
+        .from(TABLE_MAP[tableKey])
+        .select('*')
+        .eq('id', rowId)
+        .limit(1)
+      if (error || !rows?.length) {
+        console.error(`Merge fetch error (${tableKey}):`, error)
+        return null
+      }
+      existing = rows[0]
+    } else {
+      // Fallback for localStorage mode: read from current state via functional updater below
+      existing = await new Promise(resolve => {
+        setData(prev => { resolve(prev[tableKey]?.find(r => r.id === rowId) ?? null); return prev })
+      })
+      if (!existing) return null
+    }
 
     const updates = {}
     Object.entries(newData).forEach(([k, v]) => {
@@ -114,17 +135,6 @@ export function useDatabase() {
 
     const merged = { ...existing, ...updates }
 
-    setData(prev => {
-      const next = {
-        ...prev,
-        [tableKey]: prev[tableKey].map(r => r.id === rowId ? merged : r),
-      }
-      if (!supabase) {
-        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
-      }
-      return next
-    })
-
     if (supabase) {
       const { error } = await supabase
         .from(TABLE_MAP[tableKey])
@@ -136,8 +146,20 @@ export function useDatabase() {
       }
     }
 
+    // Update local state after the DB write succeeds
+    setData(prev => {
+      const next = {
+        ...prev,
+        [tableKey]: prev[tableKey].map(r => r.id === rowId ? merged : r),
+      }
+      if (!supabase) {
+        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
+      }
+      return next
+    })
+
     return merged
-  }, [data])
+  }, []) // no [data] dependency — we read live from Supabase instead
 
   // Update a single cell
   const updateCell = useCallback(async (tableKey, rowId, field, value) => {
