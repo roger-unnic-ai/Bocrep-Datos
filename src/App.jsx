@@ -523,7 +523,7 @@ export default function App() {
 
     const makeR = () => {
       const r = new SR();
-      r.lang = "ca-ES"; r.continuous = true; r.interimResults = true;
+      r.lang = "es-ES"; r.continuous = true; r.interimResults = true;
 
       r.onresult = e => {
         let im = "";
