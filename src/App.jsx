@@ -969,7 +969,7 @@ export default function App() {
             </p>
             {act === "productes" && (
               <p style={{ margin: "4px 0 0", fontSize: 10, color: C.t3 }}>
-                💡 Prem <strong style={{ color: C.ac }}>Variant</strong> sobre un producte per crear-ne una còpia modificada: dicta només les diferències i la IA aplica els canvis.
+                💡 Prem <strong style={{ color: C.o }}>Copiar</strong> sobre un producte per crear-ne una còpia modificada: dicta només les diferències i la IA aplica els canvis.
               </p>
             )}
           </div>
@@ -1202,6 +1202,7 @@ export default function App() {
             return (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead><tr>
+                  {hasTx && <th style={{ ...thS, width: 70 }} />}
                   <th style={{ ...thS, width: 36, textAlign: "center" }}>#</th>
                   {hasTx && <th style={{ ...thS, width: 28 }} title="Transcripció" />}
                   {visibleFields.map(f => <th key={f.key} style={thS}>{f.label}</th>)}
@@ -1216,6 +1217,19 @@ export default function App() {
                         <tr key={rowId}
                           onMouseEnter={e => e.currentTarget.style.background = C.s2}
                           onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          {hasTx && (
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                              <Btn
+                                onClick={() => { setDupSrc(row.producte); setDupNewCode(""); setDupText(""); }}
+                                style={{
+                                  padding: "3px 9px", fontSize: 10,
+                                  background: C.oD, border: `1px solid ${C.o}`,
+                                  color: C.o, borderRadius: 4,
+                                }}>
+                                Copiar
+                              </Btn>
+                            </td>
+                          )}
                           <td style={{ ...tdS, textAlign: "center", color: C.t3, fontSize: 10 }}>{ri + 1}</td>
                           {hasTx && (
                             <td style={{ ...tdS, textAlign: "center" }}>
@@ -1255,18 +1269,7 @@ export default function App() {
                               </td>
                             );
                           })}
-                          <td style={{ ...tdS, whiteSpace: "nowrap" }}>
-                            {act === "productes" && (
-                              <Btn
-                                onClick={() => { setDupSrc(row.producte); setDupNewCode(""); setDupText(""); }}
-                                style={{
-                                  padding: "4px 10px", marginRight: 8, fontSize: 11,
-                                  background: C.acD, border: `1px solid ${C.ac}`,
-                                  color: C.ac, borderRadius: 5,
-                                }}>
-                                Variant
-                              </Btn>
-                            )}
+                          <td style={tdS}>
                             <span onClick={() => handleDelete(idx)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
                           </td>
                         </tr>
