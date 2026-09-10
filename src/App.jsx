@@ -501,6 +501,8 @@ export default function App() {
   const [changeLog, setChangeLog] = useState([]);
   const [fluxFilter, setFluxFilter] = useState("");
   const [expandedTx, setExpandedTx] = useState(new Set());
+  const [dupSrc, setDupSrc] = useState(null);
+  const [dupForm, setDupForm] = useState({ producte: "", codi_farcit: "" });
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
@@ -730,6 +732,22 @@ export default function App() {
     await dbDelete(act, row.id);
   };
 
+  const duplicateProduct = async (originalProducte, newProducte, newCodiFarcit) => {
+    const orig = data.productes.find(r => r.producte === originalProducte);
+    if (!orig) return;
+    const farcit = newCodiFarcit || orig.codi_farcit;
+
+    await insertRows('productes', [{
+      ...orig, producte: newProducte, codi_farcit: farcit, transcripcio: null
+    }]);
+
+    const origRecepta = data.recepta.find(r => r.producte === originalProducte);
+    if (origRecepta) await insertRows('recepta', [{ ...origRecepta, producte: newProducte, codi_farcit: farcit }]);
+
+    const origFlux = data.flux.filter(r => r.producte === originalProducte);
+    if (origFlux.length) await insertRows('flux', origFlux.map(r => ({ ...r, producte: newProducte })));
+  };
+
   /* ─── Export ─── */
   const exportJSON = () => {
     const clean = {};
@@ -826,6 +844,11 @@ export default function App() {
               {isV && <span style={{ color: C.p, marginLeft: 10 }}>🎙 Veu</span>}
               {!isV && <span style={{ color: C.o, marginLeft: 10 }}>✏️ Manual</span>}
             </p>
+            {act === "productes" && (
+              <p style={{ margin: "4px 0 0", fontSize: 10, color: C.t3 }}>
+                💡 Prem 🔁 sobre un producte per duplicar-lo com a base i adaptar-ne el farcit o el codi.
+              </p>
+            )}
           </div>
         </header>
 
@@ -1109,7 +1132,12 @@ export default function App() {
                               </td>
                             );
                           })}
-                          <td style={tdS}>
+                          <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                            {act === "productes" && (
+                              <span onClick={() => { setDupSrc(row.producte); setDupForm({ producte: "", codi_farcit: row.codi_farcit ?? "" }); }}
+                                style={{ cursor: "pointer", color: C.t3, fontSize: 13, marginRight: 8 }}
+                                title="Duplicar producte">🔁</span>
+                            )}
                             <span onClick={() => handleDelete(idx)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
                           </td>
                         </tr>
@@ -1133,6 +1161,72 @@ export default function App() {
           })()}
         </div>
       </main>
+
+      {/* ═══ MODAL DUPLICAR PRODUCTE ═══ */}
+      {dupSrc !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }} onClick={() => setDupSrc(null)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: C.s1, border: `1px solid ${C.b1}`, borderRadius: 8,
+            padding: 28, width: 380, boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>🔁 Duplicar producte</div>
+            <div style={{ fontSize: 11, color: C.t3, marginBottom: 20 }}>
+              Base: <span style={{ color: C.ac }}>{dupSrc}</span> · Es copiaran producte, recepta i tots els passos del flux.
+            </div>
+
+            <label style={{ fontSize: 11, color: C.t2, display: "block", marginBottom: 12 }}>
+              Nou codi de producte <span style={{ color: C.r }}>*</span>
+              <input
+                autoFocus
+                type="text"
+                value={dupForm.producte}
+                onChange={e => setDupForm(f => ({ ...f, producte: e.target.value }))}
+                placeholder="Ex: 24155538"
+                style={{ ...inpS, marginTop: 5 }}
+              />
+            </label>
+
+            <label style={{ fontSize: 11, color: C.t2, display: "block", marginBottom: 20 }}>
+              Codi farcit <span style={{ color: C.t3 }}>(opcional — prefilled de l'original)</span>
+              <input
+                type="text"
+                value={dupForm.codi_farcit}
+                onChange={e => setDupForm(f => ({ ...f, codi_farcit: e.target.value }))}
+                placeholder="Ex: R3055"
+                style={{ ...inpS, marginTop: 5 }}
+              />
+            </label>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn onClick={() => setDupSrc(null)}
+                style={{ padding: "8px 18px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 12 }}>
+                Cancel·lar
+              </Btn>
+              <Btn
+                disabled={!dupForm.producte.trim()}
+                onClick={async () => {
+                  const newCode = dupForm.producte.trim();
+                  const newFarcit = dupForm.codi_farcit.trim();
+                  setDupSrc(null);
+                  setStat("⏳ Duplicant producte...");
+                  await duplicateProduct(dupSrc, newCode, newFarcit || undefined);
+                  setStat(`✅ Producte "${newCode}" creat com a còpia de "${dupSrc}".`);
+                }}
+                style={{
+                  padding: "8px 20px", fontSize: 12,
+                  background: dupForm.producte.trim() ? C.ac : C.s2,
+                  border: "none", color: dupForm.producte.trim() ? "#fff" : C.t3,
+                  opacity: dupForm.producte.trim() ? 1 : 0.5,
+                }}>
+                Duplicar
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
