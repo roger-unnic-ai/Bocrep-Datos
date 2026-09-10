@@ -466,6 +466,28 @@ REGLES FINALS:
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
 
+/* ═══ Prompt: Duplicar amb modificacions per veu ═══ */
+const PROMPT_DUPLICATE = `Ets un assistent expert en producció alimentària. Estàs ajudant a crear una VARIANT d'un producte ja existent.
+
+PRODUCTE BASE (JSON complet, inclou productes, recepta, farcit, flux):
+{{BASE_JSON}}
+
+NOU CODI DE PRODUCTE: "{{NEW_CODE}}"
+
+MODIFICACIONS DICTADES PER L'USUARI:
+"{{USER_MODIFICATIONS}}"
+
+INSTRUCCIONS:
+- Retorna el JSON complet del NOU producte, com si fos una còpia del base amb les modificacions aplicades.
+- Substitueix el codi de producte antic per "{{NEW_CODE}}" a TOTES les files (productes, recepta, flux).
+- Aplica ÚNICAMENT les modificacions que l'usuari ha dictat. La resta ha de quedar IGUAL al base.
+- Si l'usuari canvia el codi_farcit, actualitza'l a productes i recepta, i genera les files de farcit corresponents (si les descriu).
+- Si NO canvia el codi_farcit, manté el mateix codi_farcit i NO tornis a duplicar files de farcit (retorna farcit:[] perquè es reutilitza el mateix R####).
+- Els números segueixen les mateixes regles de format que als prompts de veu (decimals per merma, etc.).
+
+Retorna ÚNICAMENT: {"productes":[...],"recepta":[...],"farcit":[...],"flux":[...]}
+Cap markdown, cap text extra. Numèrics no mencionats → null. Textos → null.`;
+
 /* ═══ Colors ═══ */
 const C = {
   bg: "#0A0E13", s1: "#111820", s2: "#19212D", s3: "#212C3A",
@@ -502,7 +524,10 @@ export default function App() {
   const [fluxFilter, setFluxFilter] = useState("");
   const [expandedTx, setExpandedTx] = useState(new Set());
   const [dupSrc, setDupSrc] = useState(null);
-  const [dupForm, setDupForm] = useState({ producte: "", codi_farcit: "" });
+  const [dupNewCode, setDupNewCode] = useState("");
+  const [dupText, setDupText] = useState("");
+  const [dupIsRec, setDupIsRec] = useState(false);
+  const [dupProcessing, setDupProcessing] = useState(false);
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
@@ -571,6 +596,84 @@ export default function App() {
     setIsRec(false); setInterim("");
   }, []);
 
+  /* ─── Speech per al modal de duplicació ─── */
+  const dupTextRef = useRef("");
+  useEffect(() => { dupTextRef.current = dupText; }, [dupText]);
+
+  const startDupRec = useCallback(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setStat("⚠️ Usa Chrome per reconeixement de veu."); return; }
+
+    // Atura el micro principal si estava actiu
+    if (isRec) { isStoppingRef.current = true; rRef.current?.stop(); setIsRec(false); }
+
+    isStoppingRef.current = false;
+    let acc = dupTextRef.current;
+
+    const makeR = () => {
+      const r = new SR();
+      r.lang = "es-ES"; r.continuous = true; r.interimResults = true;
+
+      r.onresult = e => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) acc += e.results[i][0].transcript + " ";
+        }
+        setDupText(acc); dupTextRef.current = acc;
+      };
+
+      r.onerror = e => {
+        if (e.error === "no-speech" || e.error === "aborted") return;
+        setStat(`⚠️ Error de veu: ${e.error}`);
+      };
+
+      r.onend = () => {
+        if (isStoppingRef.current) { setDupIsRec(false); return; }
+        try {
+          const newR = makeR();
+          rRef.current = newR;
+          newR.start();
+        } catch {
+          setDupIsRec(false);
+        }
+      };
+      return r;
+    };
+
+    const r = makeR();
+    rRef.current = r; r.start();
+    setDupIsRec(true);
+  }, [isRec]);
+
+  const stopDupRec = useCallback(() => {
+    isStoppingRef.current = true;
+    rRef.current?.stop();
+    setDupIsRec(false);
+  }, []);
+
+  /* ─── callAI — crida genèrica a l'API d'Anthropic ─── */
+  const callAI = useCallback(async (systemPrompt, userContent) => {
+    const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("Falta VITE_ANTHROPIC_API_KEY a les variables d'entorn.");
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5", max_tokens: 16000,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userContent || "Processa la informació del sistema." }],
+      }),
+    });
+    const res = await resp.json();
+    if (res.error) throw new Error(res.error.message);
+    const raw = res.content?.map(c => c.type === "text" ? c.text : "").join("").replace(/```json|```/g, "").trim();
+    return JSON.parse(raw);
+  }, []);
+
   /* ─── AI Parse — pipeline de 3 crides sequencials ─── */
   const parseVoice = useCallback(async () => {
     const text = txt.trim();
@@ -584,32 +687,12 @@ export default function App() {
     const existingResources = data.linies.filter(l => l.linia)
       .map(l => l.tipus ? `${l.linia} (${l.tipus})` : l.linia).join(", ") || "(cap)";
 
-    const callAI = async (systemPrompt) => {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5", max_tokens: 16000,
-          system: systemPrompt,
-          messages: [{ role: "user", content: text }],
-        }),
-      });
-      const res = await resp.json();
-      if (res.error) throw new Error(res.error.message);
-      const raw = res.content?.map(c => c.type === "text" ? c.text : "").join("").replace(/```json|```/g, "").trim();
-      return JSON.parse(raw);
-    };
-
     try {
       // Crida 1: Producte + Recepta + Farcit
       setStat("🤖 (1/3) Processant producte, recepta i farcit...");
       const res1 = await callAI(
-        PROMPT_PROD_RECEPTA.replace("{{EXISTING_PRODUCTS}}", existingProducts)
+        PROMPT_PROD_RECEPTA.replace("{{EXISTING_PRODUCTS}}", existingProducts),
+        text
       );
 
       const proposedProducte = res1.productes?.[0]?.producte || "";
@@ -619,7 +702,8 @@ export default function App() {
       const res2 = await callAI(
         PROMPT_FLUX
           .replace("{{EXISTING_RESOURCES}}", existingResources)
-          .replace("{{PROPOSED_PRODUCTE}}", proposedProducte)
+          .replace("{{PROPOSED_PRODUCTE}}", proposedProducte),
+        text
       );
 
       // Crida 3: Recursos / Línies
@@ -627,7 +711,8 @@ export default function App() {
       const res3 = await callAI(
         PROMPT_LINIES
           .replace("{{EXISTING_RESOURCES}}", existingResources)
-          .replace("{{PROPOSED_FLUX}}", JSON.stringify(res2.flux || [], null, 2))
+          .replace("{{PROPOSED_FLUX}}", JSON.stringify(res2.flux || [], null, 2)),
+        text
       );
 
       const parsed = {
@@ -732,21 +817,59 @@ export default function App() {
     await dbDelete(act, row.id);
   };
 
-  const duplicateProduct = async (originalProducte, newProducte, newCodiFarcit) => {
-    const orig = data.productes.find(r => r.producte === originalProducte);
-    if (!orig) return;
-    const farcit = newCodiFarcit || orig.codi_farcit;
+  const processDuplicateWithVoice = useCallback(async () => {
+    const newCode = dupNewCode.trim();
+    const modText = dupText.trim();
+    if (!newCode) { setStat("Cal un nou codi de producte."); return; }
 
-    await insertRows('productes', [{
-      ...orig, producte: newProducte, codi_farcit: farcit, transcripcio: null
-    }]);
+    setDupProcessing(true);
+    setStat("🤖 Aplicant modificacions al producte base...");
 
-    const origRecepta = data.recepta.find(r => r.producte === originalProducte);
-    if (origRecepta) await insertRows('recepta', [{ ...origRecepta, producte: newProducte, codi_farcit: farcit }]);
+    // Recopilar tot el producte base sense metadades
+    const stripMeta = r => { const c = { ...r }; delete c.id; delete c.created_at; return c; };
+    const codisFarcit = [...new Set(
+      data.recepta.filter(r => r.producte === dupSrc).map(r => r.codi_farcit).filter(Boolean)
+    )];
+    const baseJSON = {
+      productes: data.productes.filter(r => r.producte === dupSrc)
+        .map(r => { const c = stripMeta(r); delete c.transcripcio; return c; }),
+      recepta: data.recepta.filter(r => r.producte === dupSrc).map(stripMeta),
+      flux:    data.flux.filter(r => r.producte === dupSrc).map(stripMeta),
+      farcit:  data.farcit.filter(r => codisFarcit.includes(r.codi_farcit)).map(stripMeta),
+    };
 
-    const origFlux = data.flux.filter(r => r.producte === originalProducte);
-    if (origFlux.length) await insertRows('flux', origFlux.map(r => ({ ...r, producte: newProducte })));
-  };
+    try {
+      const prompt = PROMPT_DUPLICATE
+        .replace("{{BASE_JSON}}", JSON.stringify(baseJSON, null, 2))
+        .replaceAll("{{NEW_CODE}}", newCode)
+        .replace("{{USER_MODIFICATIONS}}", modText || "(sense modificacions — copia idèntic amb el nou codi)");
+
+      const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.");
+
+      const parsed = {
+        productes: (res.productes || []).map(p => ({
+          ...p, producte: newCode,
+          transcripcio: `[Duplicat de ${dupSrc}]${modText ? ` ${modText}` : ""}`,
+        })),
+        recepta: (res.recepta || []).map(r => ({ ...r, producte: newCode })),
+        farcit:  res.farcit || [],
+        flux:    (res.flux || []).map(f => ({ ...f, producte: newCode })),
+        linies:  [],
+      };
+
+      const { resolved, changeLog: changes } = resolveCanonicalNames(parsed, data);
+      setPend(resolved);
+      setChangeLog(changes);
+      setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
+      setStat(`✅ Variant "${newCode}" preparada — Revisa i confirma.`);
+      setDupSrc(null); setDupNewCode(""); setDupText("");
+    } catch (err) {
+      console.error(err);
+      setStat(`❌ Error: ${err.message}`);
+    } finally {
+      setDupProcessing(false);
+    }
+  }, [dupSrc, dupNewCode, dupText, data, callAI]);
 
   /* ─── Export ─── */
   const exportJSON = () => {
@@ -846,7 +969,7 @@ export default function App() {
             </p>
             {act === "productes" && (
               <p style={{ margin: "4px 0 0", fontSize: 10, color: C.t3 }}>
-                💡 Prem 🔁 sobre un producte per duplicar-lo com a base i adaptar-ne el farcit o el codi.
+                💡 Prem <strong style={{ color: C.ac }}>Variant</strong> sobre un producte per crear-ne una còpia modificada: dicta només les diferències i la IA aplica els canvis.
               </p>
             )}
           </div>
@@ -1134,9 +1257,15 @@ export default function App() {
                           })}
                           <td style={{ ...tdS, whiteSpace: "nowrap" }}>
                             {act === "productes" && (
-                              <span onClick={() => { setDupSrc(row.producte); setDupForm({ producte: "", codi_farcit: row.codi_farcit ?? "" }); }}
-                                style={{ cursor: "pointer", color: C.t3, fontSize: 13, marginRight: 8 }}
-                                title="Duplicar producte">🔁</span>
+                              <Btn
+                                onClick={() => { setDupSrc(row.producte); setDupNewCode(""); setDupText(""); }}
+                                style={{
+                                  padding: "4px 10px", marginRight: 8, fontSize: 11,
+                                  background: C.acD, border: `1px solid ${C.ac}`,
+                                  color: C.ac, borderRadius: 5,
+                                }}>
+                                Variant
+                              </Btn>
                             )}
                             <span onClick={() => handleDelete(idx)} style={{ cursor: "pointer", color: C.t3, fontSize: 13 }} title="Eliminar">🗑</span>
                           </td>
@@ -1162,66 +1291,92 @@ export default function App() {
         </div>
       </main>
 
-      {/* ═══ MODAL DUPLICAR PRODUCTE ═══ */}
+      {/* ═══ MODAL DUPLICAR AMB MODIFICACIONS PER VEU ═══ */}
       {dupSrc !== null && (
         <div style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000,
           display: "flex", alignItems: "center", justifyContent: "center",
-        }} onClick={() => setDupSrc(null)}>
+        }} onClick={() => { if (!dupProcessing) { stopDupRec(); setDupSrc(null); } }}>
           <div onClick={e => e.stopPropagation()} style={{
             background: C.s1, border: `1px solid ${C.b1}`, borderRadius: 8,
-            padding: 28, width: 380, boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            padding: 28, width: 460, boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
           }}>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>🔁 Duplicar producte</div>
+            {/* Capçalera */}
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>🔁 Crear variant de producte</div>
             <div style={{ fontSize: 11, color: C.t3, marginBottom: 20 }}>
-              Base: <span style={{ color: C.ac }}>{dupSrc}</span> · Es copiaran producte, recepta i tots els passos del flux.
+              Base: <span style={{ color: C.ac, fontWeight: 600 }}>{dupSrc}</span>
+              <span style={{ marginLeft: 8 }}>· Dicta o escriu només el que canvia. La resta es copia del base.</span>
             </div>
 
-            <label style={{ fontSize: 11, color: C.t2, display: "block", marginBottom: 12 }}>
+            {/* Nou codi */}
+            <label style={{ fontSize: 11, color: C.t2, display: "block", marginBottom: 16 }}>
               Nou codi de producte <span style={{ color: C.r }}>*</span>
               <input
                 autoFocus
                 type="text"
-                value={dupForm.producte}
-                onChange={e => setDupForm(f => ({ ...f, producte: e.target.value }))}
+                value={dupNewCode}
+                onChange={e => setDupNewCode(e.target.value)}
                 placeholder="Ex: 24155538"
+                disabled={dupProcessing}
                 style={{ ...inpS, marginTop: 5 }}
               />
             </label>
 
-            <label style={{ fontSize: 11, color: C.t2, display: "block", marginBottom: 20 }}>
-              Codi farcit <span style={{ color: C.t3 }}>(opcional — prefilled de l'original)</span>
-              <input
-                type="text"
-                value={dupForm.codi_farcit}
-                onChange={e => setDupForm(f => ({ ...f, codi_farcit: e.target.value }))}
-                placeholder="Ex: R3055"
-                style={{ ...inpS, marginTop: 5 }}
-              />
-            </label>
+            {/* Zona de modificacions — mic + textarea */}
+            <div style={{ fontSize: 11, color: C.t2, marginBottom: 8 }}>
+              Modificacions respecte al base{" "}
+              <span style={{ color: C.t3 }}>(opcional — si no dius res, es copia tal qual)</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              {!dupIsRec ? (
+                <Btn onClick={startDupRec} disabled={dupProcessing}
+                  style={{ padding: "7px 14px", background: `linear-gradient(135deg, ${C.r}, #DC2626)`, border: "none", color: "#fff", fontSize: 11 }}>
+                  ⏺ Micròfon
+                </Btn>
+              ) : (
+                <Btn onClick={stopDupRec}
+                  style={{ padding: "7px 14px", background: C.rD, border: `2px solid ${C.r}`, color: C.r, fontSize: 11, animation: "pulse 1.5s infinite" }}>
+                  ⏹ Parar
+                </Btn>
+              )}
+              {dupText && (
+                <Btn onClick={() => setDupText("")} disabled={dupProcessing}
+                  style={{ padding: "7px 10px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t3, fontSize: 11 }}>
+                  🗑 Netejar
+                </Btn>
+              )}
+            </div>
+            <textarea
+              value={dupText}
+              onChange={e => setDupText(e.target.value)}
+              disabled={dupProcessing}
+              placeholder={`Ex: "canvia el codi de farcit a R3060, el farcit ara pesa 200 grams, i la freidora tarda 25 minuts"`}
+              rows={5}
+              style={{
+                ...inpS, resize: "vertical", lineHeight: 1.6,
+                color: dupText ? C.t1 : C.t3,
+                marginBottom: 20,
+              }}
+            />
 
+            {/* Botons */}
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <Btn onClick={() => setDupSrc(null)}
+              <Btn onClick={() => { stopDupRec(); setDupSrc(null); setDupNewCode(""); setDupText(""); }}
+                disabled={dupProcessing}
                 style={{ padding: "8px 18px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 12 }}>
                 Cancel·lar
               </Btn>
               <Btn
-                disabled={!dupForm.producte.trim()}
-                onClick={async () => {
-                  const newCode = dupForm.producte.trim();
-                  const newFarcit = dupForm.codi_farcit.trim();
-                  setDupSrc(null);
-                  setStat("⏳ Duplicant producte...");
-                  await duplicateProduct(dupSrc, newCode, newFarcit || undefined);
-                  setStat(`✅ Producte "${newCode}" creat com a còpia de "${dupSrc}".`);
-                }}
+                disabled={!dupNewCode.trim() || dupProcessing}
+                onClick={processDuplicateWithVoice}
                 style={{
                   padding: "8px 20px", fontSize: 12,
-                  background: dupForm.producte.trim() ? C.ac : C.s2,
-                  border: "none", color: dupForm.producte.trim() ? "#fff" : C.t3,
-                  opacity: dupForm.producte.trim() ? 1 : 0.5,
+                  background: dupNewCode.trim() && !dupProcessing ? C.ac : C.s2,
+                  border: "none",
+                  color: dupNewCode.trim() && !dupProcessing ? "#fff" : C.t3,
+                  opacity: dupNewCode.trim() && !dupProcessing ? 1 : 0.5,
                 }}>
-                Duplicar
+                {dupProcessing ? "🤖 Processant..." : "✨ Crear variant"}
               </Btn>
             </div>
           </div>
