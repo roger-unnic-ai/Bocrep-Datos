@@ -1245,9 +1245,13 @@ export default function App() {
                           )}
                           {visibleFields.map(f => {
                             const isEd = ec?.ri === idx && ec?.key === f.key;
+                            const isText = f.type !== "number" && !f.options;
                             return (
                               <td key={f.key} onClick={() => !isEd && startEdit(idx, f.key, row[f.key])}
-                                style={{ ...tdS, cursor: "pointer", padding: isEd ? "2px 4px" : undefined }}>
+                                style={{
+                                  ...tdS, cursor: "pointer", padding: isEd ? "2px 4px" : undefined,
+                                  ...(isText && !isEd ? { maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } : {}),
+                                }}>
                                 {isEd ? (
                                   f.options ? (
                                     <select ref={eRef} value={ev} onChange={e => setEv(e.target.value)} onBlur={commitEdit}
@@ -1262,7 +1266,8 @@ export default function App() {
                                       style={ceS} />
                                   )
                                 ) : (
-                                  <span style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
+                                  <span title={isText && row[f.key] ? String(row[f.key]) : undefined}
+                                    style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
                                     {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
                                   </span>
                                 )}
