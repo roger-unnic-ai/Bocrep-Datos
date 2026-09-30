@@ -12,8 +12,9 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 2. **Mesures de palet** (unitats, caixes, kg)
 3. **Receta** (masses i farcits que utilitza)
 4. **Composició del farcit** (matèries primeres)
-5. **Restriccions** (dies permesos, incompatibilitats)
-6. **Flux de producció** (passos en ordre)
+5. **Composició de la massa** (matèries primeres)
+6. **Restriccions** (dies permesos, incompatibilitats)
+7. **Flux de producció** (passos en ordre)
 
 ---
 
@@ -75,7 +76,22 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 
 ---
 
-## 5️⃣ Restriccions i incompatibilitats
+## 5️⃣ Composició de la massa (matèries primeres)
+
+> 🔑 Igual que amb el farcit: només cal dictar-ho si es tracta d'una **massa nova**. Si la massa ja està registrada al sistema, pots ometre-la.
+
+**Què cal dir per cada matèria primera de la massa:**
+- Codi de la massa a la qual pertany (`M####`)
+- Codi o nom de la matèria primera (`M####` o nom comú, ex: `Farina`)
+- Kg per palet
+- Merma (decimal)
+
+**Exemple de frase:**
+> *«La massa M0002 està composta per: M1001 amb 210,5 kg i 2% de merma, Farina amb 98,3 kg sense merma, i M1005 amb 26,2 kg i 1% de merma.»*
+
+---
+
+## 6️⃣ Restriccions i incompatibilitats
 
 **Què cal dir:**
 - **Dies permesos** — quins dies de la setmana es pot fabricar.
@@ -87,7 +103,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 
 ---
 
-## 6️⃣ Flux de producció (la part més llarga)
+## 7️⃣ Flux de producció (la part més llarga)
 
 > 🔑 És **molt important** descriure el procés **de principi a fi**, en l'ordre real, i indicar **quin dia del cicle** s'executa cada bloc.
 
@@ -132,6 +148,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 - [ ] Tinc les **xifres del palet** (unitats, caixes, kg)
 - [ ] Tinc la **recepta** (massa + farcit + grams + mermes)
 - [ ] Sé si el **farcit ja existeix** o l'he de descriure complet
+- [ ] Sé si la **massa ja existeix** o n'he de descriure la composició
 - [ ] Tinc clars els **dies permesos** i les **incompatibilitats**
 - [ ] He **ordenat mentalment** el flux: Dia 1 → Dia 2 → … → encaixat final
 
@@ -143,6 +160,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 > *Palet: 4420 unitats, 221 caixes, 20 unitats per caixa. 335,01 kg de massa i 328,01 kg de farcit.*
 > *Massa M0002, 40 grams per unitat, 24,8% de merma. Farcit R3055, 72 grams per unitat, 1% de merma.*
 > *El R3055 porta: M2001 142 kg amb 3% merma; M3006 228 kg amb 65% merma; M4007 34 kg amb 8% merma; M1010 23 kg sense merma; M1011 5,8 kg sense merma; i Ricotta 49 kg sense merma.*
+> *La M0002 porta: M1001 210,5 kg amb 2% merma; Farina 98,3 kg sense merma; i M1005 26,2 kg amb 1% merma.*
 > *Es fabrica dimecres, dijous i divendres. No es poden fabricar altres crepes salats ni rolls.*
 >
 > *Flux. Dia 1.*
@@ -173,7 +191,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 ## 🧩 Què passa després de gravar
 
 1. L'IA fa **3 crides seqüencials**:
-   - 1ª → Producte + Recepta + Farcit
+   - 1ª → Producte + Recepta + Farcit + Masses
    - 2ª → Flux (passos)
    - 3ª → Recursos nous (línies)
 2. Es mostren totes les files **proposades** abans de desar-les.

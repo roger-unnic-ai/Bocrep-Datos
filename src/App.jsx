@@ -45,6 +45,15 @@ const SCHEMAS = {
       { key: "merma",        label: "Merma (decimal, 0.03 = 3%)", type: "number" },
     ],
   },
+  masses: {
+    label: "Masses", icon: "🌾", voice: true,
+    fields: [
+      { key: "codi_massa",   label: "Codi massa (M####)",        type: "text",   req: true, placeholder: "M0002" },
+      { key: "codi_nom_mp",  label: "Codi / Nom Matèria Prima",  type: "text",   req: true, placeholder: "M1001 o Farina" },
+      { key: "kg_per_palet", label: "Kg per palet",              type: "number" },
+      { key: "merma",        label: "Merma (decimal, 0.03 = 3%)", type: "number" },
+    ],
+  },
   linies: {
     label: "Recursos", icon: "🏭", voice: true, manual: true,
     fields: [
@@ -94,7 +103,7 @@ const SCHEMAS = {
   },
 };
 
-const CASCADE = ["productes", "recepta", "farcit", "linies", "flux"];
+const CASCADE = ["productes", "recepta", "farcit", "masses", "linies", "flux"];
 
 /* ══════════════════════════════════════════════════════════════
    ENTITY RESOLUTION — normalitza noms proposats contra la BD
@@ -164,6 +173,11 @@ const ENTITY_DEFS = [
     table: 'farcit', keyField: 'codi_nom_mp', matchFn: fuzzyMatch,
     refs: [],
   },
+  {
+    // Mateixa lògica que farcit: la matèria primera d'una massa pot dictar-se pel nom
+    table: 'masses', keyField: 'codi_nom_mp', matchFn: fuzzyMatch,
+    refs: [],
+  },
 ]
 
 // Taules secundàries: com detectar si una fila ja existeix
@@ -184,6 +198,15 @@ const SECONDARY_CHECKS = [
     matchFn: (row, existing) =>
       row.codi_farcit != null && existing.codi_farcit != null &&
       exactMatch(row.codi_farcit, existing.codi_farcit) &&
+      fuzzyMatch(row.codi_nom_mp, existing.codi_nom_mp),
+  },
+  {
+    // Masses: 1 fila per (codi_massa + codi_nom_mp)
+    // codi_massa és un codi únic → exactMatch; codi_nom_mp pot ser nom → fuzzyMatch
+    table: 'masses',
+    matchFn: (row, existing) =>
+      row.codi_massa != null && existing.codi_massa != null &&
+      exactMatch(row.codi_massa, existing.codi_massa) &&
       fuzzyMatch(row.codi_nom_mp, existing.codi_nom_mp),
   },
   {
@@ -277,7 +300,7 @@ function resolveCanonicalNames(parsed, dbData) {
 
 const PROMPT_PROD_RECEPTA = `Ets un assistent expert en producció alimentària industrial. Treballes per a un sistema d'OPTIMITZACIÓ DE LA PRODUCCIÓ que, a partir de les receptes i els recursos disponibles, optimitza l'ús del personal i les màquines per maximitzar l'eficiència productiva.
 
-L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les dades per a TRES TAULES:
+L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les dades per a QUATRE TAULES:
 
 ═══════════════════════════════════════════
 1. PRODUCTES (1 fila per producte):
@@ -331,6 +354,20 @@ Regles FARCIT:
 - Exemple R3055: M2001 (142.03 kg, 0.03), M3006 (228.67 kg, 0.65), M4007 (34.23 kg, 0.08), M1010 (23.62 kg, 0), Ricotta (49.2 kg, 0).
 
 ═══════════════════════════════════════════
+4. MASSES (1 fila per matèria primera dins un codi_massa):
+═══════════════════════════════════════════
+Camps i FORMATS:
+- 'codi_massa'    text   → M#### a què pertany la matèria primera (ex: "M0002")
+- 'codi_nom_mp'   text   → codi o nom de la matèria primera (ex: "M1001", "Farina")
+- 'kg_per_palet'  number → kg d'aquesta matèria primera per palet de producte
+- 'merma'         number → DECIMAL entre 0 i 1 (ex: 0.03 = 3%)
+
+Regles MASSES:
+- Un codi_massa (ex: M0002) està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
+- Mateixa lògica que FARCIT però per a la massa en lloc del farcit.
+- Si l'usuari no descriu la composició de la massa → retorna masses:[].
+
+═══════════════════════════════════════════
 EXEMPLE COMPLET (producte 24155536, "Crepes Salados 110gr"):
 ═══════════════════════════════════════════
 {
@@ -353,6 +390,10 @@ EXEMPLE COMPLET (producte 24155536, "Crepes Salados 110gr"):
     { "codi_farcit": "R3055", "codi_nom_mp": "M2001",   "kg_per_palet": 142.03, "merma": 0.03 },
     { "codi_farcit": "R3055", "codi_nom_mp": "M3006",   "kg_per_palet": 228.67, "merma": 0.65 },
     { "codi_farcit": "R3055", "codi_nom_mp": "Ricotta", "kg_per_palet": 49.2,   "merma": 0 }
+  ],
+  "masses": [
+    { "codi_massa": "M0002", "codi_nom_mp": "M1001",  "kg_per_palet": 210.5, "merma": 0.02 },
+    { "codi_massa": "M0002", "codi_nom_mp": "Farina", "kg_per_palet": 98.3,  "merma": 0 }
   ]
 }
 
@@ -360,7 +401,7 @@ Productes ja existents al sistema (NO duplicar — fes servir EL MATEIX 'product
 
 REGLES ESTRICTES:
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
-- Format exacte: {"productes":[...],"recepta":[...],"farcit":[...]}
+- Format exacte: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...]}
 - Claus exactes (case-sensitive, minúscules amb guions baixos). Converteix números parlats a xifres.
 - Si una taula no té informació → array buit [].
 - VALORS NO MENCIONATS: numèrics → null (MAI ""). Textos → null (MAI "").
@@ -442,7 +483,7 @@ CAMPS I FORMATS (NOMÉS els recursos nous):
 QUÈ ÉS UN RECURS (regles estrictes):
 ═══════════════════════════════════════════
 - Un RECURS és un element FÍSIC amb capacitat limitada: màquina, olla, forn, freidora, batedora, rustidor, container, zona de producció, equip. No es pot usar simultàniament per a més d'una tasca (o té un límit de capacitat).
-- Exemples VÀLIDS extrets d'un flux real: "Olla mediana", "Olla grande", "Freidora / Balanzas / Rustideros", "Fogón / Olla escaldar", "Turmix Grande / Balança", "Máquina 4", "Detector Metalls", "Encaixadora".
+- Exemples VÀLIDS extrets d'un flux real: "Olla mediana", "Olla grande", "Freidora / Balanzas / Rustideros", "Fogón / Olla escaldar", "Turmix Grande / Balança", "Máquina 1", "Máquina 2", "Máquina 4", "Detector Metalls", "Encaixadora".
 - NO SÓN RECURSOS (no els registres):
   · "Espera", "Magatzem", "Emmagatzematge", "Control" — només estats.
   · Tasques administratives, preparacions sense màquina concreta (ex: "Preparació de carros", "Preparació etiquetes") → 'linia' del pas serà null.
@@ -469,7 +510,7 @@ REGLES FINALS:
 /* ═══ Prompt: Duplicar amb modificacions per veu ═══ */
 const PROMPT_DUPLICATE = `Ets un assistent expert en producció alimentària. Estàs ajudant a crear una VARIANT d'un producte ja existent.
 
-PRODUCTE BASE (JSON complet, inclou productes, recepta, farcit, flux):
+PRODUCTE BASE (JSON complet, inclou productes, recepta, farcit, masses, flux):
 {{BASE_JSON}}
 
 NOU CODI DE PRODUCTE: "{{NEW_CODE}}"
@@ -483,9 +524,10 @@ INSTRUCCIONS:
 - Aplica ÚNICAMENT les modificacions que l'usuari ha dictat. La resta ha de quedar IGUAL al base.
 - Si l'usuari canvia el codi_farcit, actualitza'l a productes i recepta, i genera les files de farcit corresponents (si les descriu).
 - Si NO canvia el codi_farcit, manté el mateix codi_farcit i NO tornis a duplicar files de farcit (retorna farcit:[] perquè es reutilitza el mateix R####).
+- Mateixa regla per a la massa: si l'usuari canvia el codi_massa, actualitza'l a productes i recepta i genera les files de masses si en descriu la composició. Si NO el canvia, retorna masses:[] perquè es reutilitza la mateixa M####.
 - Els números segueixen les mateixes regles de format que als prompts de veu (decimals per merma, etc.).
 
-Retorna ÚNICAMENT: {"productes":[...],"recepta":[...],"farcit":[...],"flux":[...]}
+Retorna ÚNICAMENT: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...],"flux":[...]}
 Cap markdown, cap text extra. Numèrics no mencionats → null. Textos → null.`;
 
 /* ═══ Colors ═══ */
@@ -719,6 +761,7 @@ export default function App() {
         productes: (res1.productes || []).map(p => ({ ...p, transcripcio: text })),
         recepta:   res1.recepta   || [],
         farcit:    res1.farcit    || [],
+        masses:    res1.masses    || [],
         flux:      res2.flux      || [],
         linies:    res3.linies    || [],
       };
@@ -830,12 +873,16 @@ export default function App() {
     const codisFarcit = [...new Set(
       data.recepta.filter(r => r.producte === dupSrc).map(r => r.codi_farcit).filter(Boolean)
     )];
+    const codisMassa = [...new Set(
+      data.recepta.filter(r => r.producte === dupSrc).map(r => r.codi_massa).filter(Boolean)
+    )];
     const baseJSON = {
       productes: data.productes.filter(r => r.producte === dupSrc)
         .map(r => { const c = stripMeta(r); delete c.transcripcio; return c; }),
       recepta: data.recepta.filter(r => r.producte === dupSrc).map(stripMeta),
       flux:    data.flux.filter(r => r.producte === dupSrc).map(stripMeta),
       farcit:  data.farcit.filter(r => codisFarcit.includes(r.codi_farcit)).map(stripMeta),
+      masses:  data.masses.filter(r => codisMassa.includes(r.codi_massa)).map(stripMeta),
     };
 
     try {
@@ -853,6 +900,7 @@ export default function App() {
         })),
         recepta: (res.recepta || []).map(r => ({ ...r, producte: newCode })),
         farcit:  res.farcit || [],
+        masses:  res.masses || [],
         flux:    (res.flux || []).map(f => ({ ...f, producte: newCode })),
         linies:  [],
       };

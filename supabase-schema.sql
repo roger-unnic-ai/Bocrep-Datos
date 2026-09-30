@@ -46,7 +46,17 @@ create table if not exists farcit (
   merma             numeric
 );
 
--- 4. LÍNIES
+-- 4. MASSES (1 fila per matèria primera dins un codi_massa)
+create table if not exists masses (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz default now(),
+  codi_massa        text,
+  codi_nom_mp       text,
+  kg_per_palet      numeric,
+  merma             numeric
+);
+
+-- 5. LÍNIES
 create table if not exists linies (
   id            uuid primary key default gen_random_uuid(),
   created_at    timestamptz default now(),
@@ -59,7 +69,7 @@ create table if not exists linies (
   comentaris        text
 );
 
--- 5. FLUX
+-- 6. FLUX
 create table if not exists flux (
   id            uuid primary key default gen_random_uuid(),
   created_at    timestamptz default now(),
@@ -77,7 +87,7 @@ create table if not exists flux (
   comentaris            text
 );
 
--- 6. TORNS
+-- 7. TORNS
 create table if not exists torns (
   id            uuid primary key default gen_random_uuid(),
   created_at    timestamptz default now(),
@@ -130,6 +140,7 @@ ALTER TABLE torns ADD COLUMN IF NOT EXISTS comentaris text;
 alter table productes enable row level security;
 alter table recepta   enable row level security;
 alter table farcit    enable row level security;
+alter table masses    enable row level security;
 alter table linies    enable row level security;
 alter table flux      enable row level security;
 alter table torns     enable row level security;
@@ -138,6 +149,7 @@ alter table torns     enable row level security;
 create policy "Allow all" on productes for all using (true) with check (true);
 create policy "Allow all" on recepta   for all using (true) with check (true);
 create policy "Allow all" on farcit    for all using (true) with check (true);
+create policy "Allow all" on masses    for all using (true) with check (true);
 create policy "Allow all" on linies    for all using (true) with check (true);
 create policy "Allow all" on flux      for all using (true) with check (true);
 create policy "Allow all" on torns     for all using (true) with check (true);

@@ -5,6 +5,7 @@ const TABLE_MAP = {
   productes: 'productes',
   recepta: 'recepta',
   farcit: 'farcit',
+  masses: 'masses',
   linies: 'linies',
   flux: 'flux',
   torns: 'torns',
