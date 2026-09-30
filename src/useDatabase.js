@@ -64,9 +64,10 @@ export function useDatabase() {
     setLoading(false)
   }
 
-  // Insert rows into a specific table
+  // Insert rows into a specific table. Returns { inserted, error } so the UI can
+  // report failures instead of them passing unnoticed.
   const insertRows = useCallback(async (tableKey, rows) => {
-    if (!rows.length) return []
+    if (!rows.length) return { inserted: [], error: null }
 
     const clean = rows.map(cleanRow)
 
@@ -77,7 +78,7 @@ export function useDatabase() {
         try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
         return next
       })
-      return withIds
+      return { inserted: withIds, error: null }
     }
 
     const { data: inserted, error } = await supabase
@@ -87,14 +88,14 @@ export function useDatabase() {
 
     if (error) {
       console.error(`Insert error (${tableKey}):`, error)
-      return []
+      return { inserted: [], error: error.message || String(error) }
     }
 
     setData(prev => ({
       ...prev,
       [tableKey]: [...prev[tableKey], ...inserted],
     }))
-    return inserted
+    return { inserted, error: null }
   }, [])
 
   // Merge new data into an existing row — only fills fields that are currently empty/null.

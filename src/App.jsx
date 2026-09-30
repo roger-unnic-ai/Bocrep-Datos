@@ -882,6 +882,7 @@ export default function App() {
   const confirmAll = useCallback(async () => {
     setStat("💾 Guardant a la base de dades...");
     let nInserted = 0, nUpdated = 0, nErrors = 0;
+    const errMsgs = [];
 
     for (const t of CASCADE) {
       const rows = pend[t] || [];
@@ -891,9 +892,10 @@ export default function App() {
       const toUpdate = rows.filter(r => r._action === 'update' && r._existingId);
 
       if (toInsert.length) {
-        const inserted = await insertRows(t, toInsert);
+        const { inserted, error } = await insertRows(t, toInsert);
         nInserted += inserted.length;
         if (inserted.length < toInsert.length) nErrors += toInsert.length - inserted.length;
+        if (error) errMsgs.push(`${SCHEMAS[t].label}: ${error}`);
       }
 
       for (const row of toUpdate) {
@@ -911,6 +913,10 @@ export default function App() {
     const parts = [];
     if (nInserted) parts.push(`${nInserted} nous`);
     if (nUpdated) parts.push(`${nUpdated} actualitzats`);
+    if (errMsgs.length) {
+      setStat(`❌ ${parts.join(' · ') || 'Res desat'} — ${errMsgs.join('  ·  ')}`);
+      return;
+    }
     const errTxt = nErrors ? `  ⚠️ ${nErrors} errors (consola)` : '';
     setStat(`✅ ${parts.join(' · ') || 'Sense canvis nous'}${errTxt}`);
   }, [pend, insertRows, mergeRow, updateCell]);
@@ -935,7 +941,8 @@ export default function App() {
     const row = {}; sc.fields.forEach(f => row[f.key] = ""); setMr(row);
   };
   const saveManual = async () => {
-    await insertRows(act, [mr]);
+    const { error } = await insertRows(act, [mr]);
+    if (error) { setStat(`❌ No s'ha pogut desar a ${sc.label}: ${error}`); return; }
     setMr(null); setStat(`✅ Registre afegit a ${sc.label}.`);
   };
 
@@ -1017,11 +1024,17 @@ export default function App() {
   /* ─── Crear les files de composició que falten per a les dades ja registrades ─── */
   const backfillCompositions = useCallback(async () => {
     setStat("⏳ Creant les files de composició que falten...");
-    const done = [];
+    const done = [], failed = [];
     for (const { spec, rows } of missingRows) {
       if (!rows.length) continue;
-      const inserted = await insertRows(spec.table, rows);
-      done.push(`${SCHEMAS[spec.table].icon} ${SCHEMAS[spec.table].label}: ${inserted.length}`);
+      const { inserted, error } = await insertRows(spec.table, rows);
+      const label = `${SCHEMAS[spec.table].icon} ${SCHEMAS[spec.table].label}`;
+      if (error) failed.push(`${label}: ${error}`);
+      else done.push(`${label}: ${inserted.length}`);
+    }
+    if (failed.length) {
+      setStat(`❌ ${failed.join("  ·  ")}${done.length ? `  ·  Creades → ${done.join(", ")}` : ""}`);
+      return;
     }
     setStat(done.length
       ? `✅ Files creades — ${done.join("  ·  ")}. Omple-les amb les matèries primeres.`
