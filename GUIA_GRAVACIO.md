@@ -139,6 +139,8 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 | Situació | Què dictar |
 |---|---|
 | Un pas **utilitza diversos recursos alhora** (ex: forn + balança + abatidor) | Diu-ho: *«s'utilitza forn, balança i rustidor alhora»*. L'IA crearà una fila per recurs. |
+| Hi ha **diverses unitats iguals** del mateix recurs (ex: 2 olles mitjanes idèntiques) | Diu la quantitat: *«hi ha 2 olles mitjanes iguals»*. Queda a la columna **Quantitat** de Recursos. |
+| Hi ha recursos **numerats** (Màquina 1, Màquina 2, Màquina 4) | Anomena'ls sempre amb el número. Són recursos **diferents**, no unitats del mateix. |
 | Un pas és **administratiu** (preparació de carros, etiquetes, control) | Diu *«no ocupa cap màquina concreta»* o ometre el recurs. |
 | Un pas és **una neteja** d'una màquina ja descrita | No cal crear un recurs nou — diu només *«neteja de l'olla mitjana, 15 minuts»*. El sistema ho sumarà com a temps de neteja del recurs. |
 | Un dia té **molts passos** | Numera explícitament: *«Pas 1… Pas 2… Pas 3…»*. |
@@ -203,6 +205,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 3. Pots **editar qualsevol cel·la** abans de confirmar.
 4. En confirmar, les files es desen a la BBDD. **Si tornes a gravar més info del mateix producte, només s'omplen els camps que estaven buits — no s'esborra res del que ja hi ha.**
 5. Tot codi de farcit o massa que esmentis tindrà **sempre una fila** a la seva taula, encara que no n'hagis descrit la composició. Aquests codis pendents apareixen marcats amb ⚠️ a les pestanyes **Farcit**, **Masses** i **Recepta**, perquè sàpigues què queda per completar.
+6. Igualment, tot recurs que aparegui al flux tindrà **sempre una fila** a la pestanya **Recursos**, amb quantitat 1 per defecte. Si en falta cap (per exemple de gravacions antigues), la pestanya mostra un avís amb un botó per crear-los de cop.
 
 ---
 

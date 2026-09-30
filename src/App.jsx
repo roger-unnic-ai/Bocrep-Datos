@@ -59,6 +59,7 @@ const SCHEMAS = {
     fields: [
       { key: "linia",             label: "Recurs / Línia",             type: "text",   req: true },
       { key: "tipus",             label: "Tipus (màquina/eina/estri)", type: "text" },
+      { key: "quantitat",         label: "Quantitat (unitats iguals)", type: "number", placeholder: "2" },
       { key: "descripcio",        label: "Descripció",                 type: "text" },
       { key: "temps_preparacio",  label: "Temps preparació (min)",     type: "number" },
       { key: "temps_neteja",      label: "Temps neteja (min)",         type: "number" },
@@ -118,6 +119,9 @@ const normalizeStr = s =>
 const splitCodes = v =>
   String(v || '').split(/[,;]/).map(s => s.trim()).filter(Boolean)
 
+// Les tasques de neteja no són recursos propis: es modelen amb el temps_neteja del recurs
+const isCleaningTask = v => /^(limpieza|neteja|netejar|limpiar)\b/.test(normalizeStr(v))
+
 const singularize = s => {
   if (s.endsWith('es') && s.length > 4) return s.slice(0, -2)
   if (s.endsWith('s') && s.length > 3) return s.slice(0, -1)
@@ -167,9 +171,13 @@ const ENTITY_DEFS = [
   {
     // linia és un nom descriptiu → fuzzyMatch per tolerar variants ortogràfiques
     // linia a flux és OPCIONAL (null per a passos sense recurs físic).
+    // autoAdd: si la IA s'ha deixat un recurs que apareix al flux, es crea igualment.
     table: 'linies', keyField: 'linia', matchFn: fuzzyMatch,
     refs: [
-      { table: 'flux', field: 'linia', clearIfUnresolved: false },
+      {
+        table: 'flux', field: 'linia', clearIfUnresolved: false,
+        autoAdd: true, autoAddDefaults: { quantitat: 1 }, skipAutoAdd: isCleaningTask,
+      },
     ],
   },
   {
@@ -275,10 +283,13 @@ function resolveCanonicalNames(parsed, dbData) {
         if (ref.clearIfUnresolved) {
           return { ...row, [ref.field]: '' }
         }
-        if (ref.autoAdd) {
+        if (ref.autoAdd && !(ref.skipAutoAdd && ref.skipAutoAdd(refVal))) {
           const alreadyInBatch = resolved[table]?.some(e => matchFn(e[keyField], refVal))
           if (!alreadyInBatch) {
-            resolved[table] = [...(resolved[table] || []), { [keyField]: refVal, _action: 'insert', _existingId: null }]
+            resolved[table] = [...(resolved[table] || []), {
+              [keyField]: refVal, ...(ref.autoAddDefaults || {}),
+              _action: 'insert', _existingId: null,
+            }]
             mapping[normalizeStr(refVal)] = { canonical: refVal, existingId: null }
           }
         }
@@ -329,6 +340,21 @@ function missingCompositionRows(dbData, source, { table, codeField, mermaField }
     rows.push({ [codeField]: code, codi_nom_mp: null, kg_per_palet: null, merma })
   }
   return rows
+}
+
+// Recursos referenciats a flux.linia que no tenen fila al catàleg. Fa servir fuzzyMatch,
+// igual que la resolució d'entitats, per no crear duplicats gairebé iguals.
+function missingResourceRows(dbData) {
+  const referenced = new Map() // normalitzat → nom original
+  for (const r of dbData.flux || []) {
+    const v = r.linia
+    if (!v || isCleaningTask(v)) continue
+    const k = normalizeStr(v)
+    if (!referenced.has(k)) referenced.set(k, v)
+  }
+  return [...referenced.values()]
+    .filter(v => !(dbData.linies || []).some(l => fuzzyMatch(v, l.linia)))
+    .map(linia => ({ linia, quantitat: 1 }))
 }
 
 // Tot codi de farcit/massa referenciat ha de tenir com a mínim una fila a la seva taula
@@ -535,6 +561,9 @@ CAMPS I FORMATS (NOMÉS els recursos nous):
 ═══════════════════════════════════════════
 - 'linia'            text   → nom exacte del recurs tal com apareix al flux (ex: "Olla mediana", "Olla grande", "Freidora", "Turmix Grande / Balança", "Máquina 4", "Detector Metalls").
 - 'tipus'            text   → categoria física: "màquina", "forn", "olla", "freidora", "turmix", "balança", "cambra", "zona", "container", "fogó", "rustidor", "abatidor"...
+- 'quantitat'        number → quantes unitats IDÈNTIQUES i intercanviables hi ha d'aquest recurs
+                              (ex: 2 si hi ha dues olles medianes iguals que poden treballar en paral·lel).
+                              Si no s'especifica, posa 1.
 - 'descripcio'       text   → descripció breu de què fa o per a què s'utilitza. null si no es pot deduir.
 - 'temps_preparacio' number → minuts de preparació/posada en marxa abans d'usar-lo (ex: 60 per "Preparación Máquina 4"). null si no s'especifica.
 - 'temps_neteja'     number → minuts de neteja després d'usar-lo (ex: 15, 30, 180). null si no s'especifica.
@@ -560,11 +589,16 @@ EXEMPLE:
 Si al flux apareixen "Olla mediana" (45 min) i "Limpieza Olla mediana" (15 min), i no existeix encara:
 {
   "linies": [
-    { "linia": "Olla mediana", "tipus": "olla", "descripcio": "Olla de cocció mitjana", "temps_preparacio": null, "temps_neteja": 15, "temps_espera": null, "comentaris": null }
+    { "linia": "Olla mediana", "tipus": "olla", "quantitat": 1, "descripcio": "Olla de cocció mitjana", "temps_preparacio": null, "temps_neteja": 15, "temps_espera": null, "comentaris": null }
   ]
 }
 
 REGLES FINALS:
+- EXHAUSTIVITAT: recorre TOTES les files del flux i fes la llista dels valors DISTINTS de 'linia'.
+  Cada valor que no sigui null, que no sigui una neteja i que no existeixi ja al sistema ha de
+  generar una fila. No te'n deixis cap, encara que no aparegui als exemples d'aquest prompt.
+- Les variants numerades són recursos DIFERENTS: "Máquina 1", "Máquina 2" i "Máquina 4" són tres
+  recursos independents, no un de sol. El mateix per a "Olla mediana" i "Olla grande".
 - Retorna ÚNICAMENT: {"linies":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -662,6 +696,9 @@ export default function App() {
     spec, rows: missingCompositionRows(data, data, spec),
   }));
   const missingTotal = missingRows.reduce((s, m) => s + m.rows.length, 0);
+
+  // Recursos usats al flux que encara no són al catàleg
+  const missingResources = missingResourceRows(data);
 
   // Qualsevol codi pendent, tingui fila buida o cap fila, per marcar-lo a recepta
   const incompleteSet = new Set([
@@ -1041,6 +1078,14 @@ export default function App() {
       : "✅ Tots els codis ja tenen fila de composició.");
   }, [missingRows, insertRows]);
 
+  /* ─── Crear els recursos que ja s'usen al flux però no són al catàleg ─── */
+  const backfillResources = useCallback(async () => {
+    setStat("⏳ Creant els recursos que falten...");
+    const { inserted, error } = await insertRows('linies', missingResources);
+    if (error) { setStat(`❌ No s'han pogut crear els recursos: ${error}`); return; }
+    setStat(`✅ ${inserted.length} recursos creats. Revisa'n el tipus i la quantitat.`);
+  }, [missingResources, insertRows]);
+
   /* ─── Export ─── */
   const exportJSON = () => {
     const clean = {};
@@ -1365,6 +1410,24 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* ═══ AVÍS DE RECURSOS REFERENCIATS SENSE FILA ═══ */}
+        {act === "linies" && missingResources.length > 0 && (
+          <div style={{ padding: "8px 24px", borderBottom: `1px solid ${C.o}`, background: C.oD, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: C.o, fontWeight: 600 }}>
+                ⚠️ {missingResources.length} {missingResources.length === 1 ? "recurs usat al flux que no és al catàleg" : "recursos usats al flux que no són al catàleg"}
+              </div>
+              <div style={{ fontSize: 11, color: C.t2, lineHeight: 1.6, marginTop: 3 }}>
+                {missingResources.map(r => r.linia).sort().join(", ")}
+              </div>
+            </div>
+            <Btn onClick={backfillResources}
+              style={{ padding: "6px 14px", background: C.o, border: "none", color: C.bg, fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+              Crear els {missingResources.length}
+            </Btn>
+          </div>
+        )}
 
         {/* ═══ DATA TABLE ═══ */}
         <div style={{ flex: 1, padding: "16px 24px", overflowX: "auto", overflowY: "auto" }}>

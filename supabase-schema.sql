@@ -62,6 +62,7 @@ create table if not exists linies (
   created_at    timestamptz default now(),
   linia             text,
   tipus             text,
+  quantitat         numeric,
   descripcio        text,
   temps_preparacio  numeric,
   temps_neteja      numeric,
@@ -124,6 +125,9 @@ ALTER TABLE farcit ADD COLUMN IF NOT EXISTS codi_farcit text;
 ALTER TABLE farcit ADD COLUMN IF NOT EXISTS kg_per_palet numeric;
 -- (la columna antiga 'grams_per_unitat' es manté per retrocompatibilitat; pots eliminar-la quan vulguis:)
 -- ALTER TABLE farcit DROP COLUMN IF EXISTS grams_per_unitat;
+
+-- LINIES
+ALTER TABLE linies ADD COLUMN IF NOT EXISTS quantitat numeric;
 
 -- TORNS
 ALTER TABLE torns ADD COLUMN IF NOT EXISTS torn_2 text;
