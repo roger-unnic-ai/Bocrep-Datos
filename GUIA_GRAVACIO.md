@@ -59,6 +59,11 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 > ⚠️ Si el producte té **múltiples farcits**, dicta cadascun per separat:
 > *«Té dos farcits: R3055 amb 72 grams per unitat i 1% de merma, i R3070 amb 50 grams per unitat i 2% de merma. Tots dos amb la mateixa massa M0002.»*
 
+> ⚠️ Igualment, si el producte té **múltiples masses**, dicta-les per separat:
+> *«Té dues masses: la M0002 amb 40 grams per unitat i 24,8% de merma, i la M0007 amb 25 grams per unitat i 12% de merma.»*
+>
+> El sistema guarda una fila per cada combinació de massa i farcit, així que pots tenir tantes masses i farcits com calgui en un mateix producte.
+
 ---
 
 ## 4️⃣ Composició del farcit (matèries primeres)
@@ -197,6 +202,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 2. Es mostren totes les files **proposades** abans de desar-les.
 3. Pots **editar qualsevol cel·la** abans de confirmar.
 4. En confirmar, les files es desen a la BBDD. **Si tornes a gravar més info del mateix producte, només s'omplen els camps que estaven buits — no s'esborra res del que ja hi ha.**
+5. Tot codi de farcit o massa que esmentis tindrà **sempre una fila** a la seva taula, encara que no n'hagis descrit la composició. Aquests codis pendents apareixen marcats amb ⚠️ a les pestanyes **Farcit**, **Masses** i **Recepta**, perquè sàpigues què queda per completar.
 
 ---
 

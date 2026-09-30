@@ -14,9 +14,9 @@ const SCHEMAS = {
       { key: "caixes_per_palet",  label: "Caixes per palet",           type: "number" },
       { key: "unitats_per_caixa", label: "Unitats per caixa",          type: "number" },
       { key: "kg_massa_palet",    label: "Kg massa / palet",           type: "number" },
-      { key: "codi_massa",        label: "Codi massa",                 type: "text" },
+      { key: "codi_massa",        label: "Codis massa",                type: "text",   placeholder: "M0002, M0007" },
       { key: "kg_farcit_palet",   label: "Kg farcit / palet",          type: "number" },
-      { key: "codi_farcit",       label: "Codi farcit",                type: "text" },
+      { key: "codi_farcit",       label: "Codis farcit",               type: "text",   placeholder: "R3055, R3070" },
       { key: "dies_permesos",     label: "Dies permesos (Dll-Dm-Dc)",  type: "text" },
       { key: "incompatible_amb",  label: "Incompatible amb (llista)",   type: "text" },
       { key: "comentaris",        label: "Comentaris",                 type: "text" },
@@ -114,6 +114,10 @@ const normalizeStr = s =>
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
 
+// Un camp de codi pot portar diversos codis separats per comes ("M0002, M0007")
+const splitCodes = v =>
+  String(v || '').split(/[,;]/).map(s => s.trim()).filter(Boolean)
+
 const singularize = s => {
   if (s.endsWith('es') && s.length > 4) return s.slice(0, -2)
   if (s.endsWith('s') && s.length > 3) return s.slice(0, -1)
@@ -183,13 +187,17 @@ const ENTITY_DEFS = [
 // Taules secundàries: com detectar si una fila ja existeix
 const SECONDARY_CHECKS = [
   {
-    // Recepta: 1 fila per (producte + codi_farcit)
-    // producte i codi_farcit són codis únics → exactMatch per ambdós
+    // Recepta: 1 fila per (producte + codi_farcit + codi_massa).
+    // Un producte pot tenir diverses masses i diversos farcits, per tant la
+    // identitat de la fila és la combinació dels tres codis, no només el farcit.
     table: 'recepta',
-    matchFn: (row, existing) =>
-      exactMatch(row.producte, existing.producte) &&
-      row.codi_farcit != null && existing.codi_farcit != null &&
-      exactMatch(row.codi_farcit, existing.codi_farcit),
+    matchFn: (row, existing) => {
+      if (!exactMatch(row.producte, existing.producte)) return false
+      // Cal com a mínim un dels dos codis per poder identificar la fila
+      if (!row.codi_farcit && !row.codi_massa) return false
+      return normalizeStr(row.codi_farcit || '') === normalizeStr(existing.codi_farcit || '')
+        && normalizeStr(row.codi_massa || '') === normalizeStr(existing.codi_massa || '')
+    },
   },
   {
     // Farcit: 1 fila per (codi_farcit + codi_nom_mp)
@@ -293,6 +301,55 @@ function resolveCanonicalNames(parsed, dbData) {
   return { resolved, changeLog }
 }
 
+// Les dues taules de composició, amb el camp de codi i la merma que els correspon a recepta
+const COMPOSITION_TABLES = [
+  { table: 'farcit', codeField: 'codi_farcit', mermaField: 'merma_farcit' },
+  { table: 'masses', codeField: 'codi_massa', mermaField: 'merma_massa' },
+]
+
+// Codis referenciats des de recepta o productes que encara no tenen cap fila a la seva
+// taula de composició. Retorna les files que caldria crear, amb el codi i la merma que
+// porti la recepta i la resta buit.
+function missingCompositionRows(dbData, source, { table, codeField, mermaField }) {
+  const referenced = new Map() // codi normalitzat → { code, merma }
+  const collect = (rows, withMerma) => {
+    for (const r of rows || [])
+      for (const code of splitCodes(r[codeField])) {
+        const k = normalizeStr(code)
+        if (!referenced.has(k)) referenced.set(k, { code, merma: withMerma ? r[mermaField] ?? null : null })
+      }
+  }
+  collect(source.recepta, true)
+  collect(source.productes, false)
+
+  const rows = []
+  for (const [k, { code, merma }] of referenced) {
+    const has = list => (list || []).some(e => normalizeStr(e[codeField]) === k)
+    if (has(dbData[table]) || has(source[table])) continue
+    rows.push({ [codeField]: code, codi_nom_mp: null, kg_per_palet: null, merma })
+  }
+  return rows
+}
+
+// Tot codi de farcit/massa referenciat ha de tenir com a mínim una fila a la seva taula
+// de composició, perquè no quedi orfe i invisible.
+function ensureCompositionStubs(resolved, dbData) {
+  const out = { ...resolved }
+  let added = 0
+
+  for (const spec of COMPOSITION_TABLES) {
+    const rows = missingCompositionRows(dbData, out, spec)
+    if (!rows.length) continue
+    out[spec.table] = [
+      ...(out[spec.table] || []),
+      ...rows.map(r => ({ ...r, _action: 'insert', _existingId: null })),
+    ]
+    added += rows.length
+  }
+
+  return { resolved: out, added }
+}
+
 /* ══════════════════════════════════════════════════════════════
    PROMPTS — pipeline de 3 crides sequencials a la IA
    Context: sistema d'optimització de producció industrial
@@ -312,9 +369,11 @@ Camps i FORMATS exactes:
 - 'caixes_per_palet'   number → ex: 221
 - 'unitats_per_caixa'  number → ex: 20
 - 'kg_massa_palet'     number → kg de massa per palet (ex: 335.01)
-- 'codi_massa'         text   → codi de la massa, format M#### (ex: "M0002")
+- 'codi_massa'         text   → codi(s) de la massa, format M#### (ex: "M0002").
+                                 Si el producte té VÀRIES masses, separa-les per comes: "M0002, M0007".
 - 'kg_farcit_palet'    number → kg de farcit per palet (ex: 328.01)
-- 'codi_farcit'        text   → codi del farcit, format R#### (ex: "R3055")
+- 'codi_farcit'        text   → codi(s) del farcit, format R#### (ex: "R3055").
+                                 Si en té VARIS, separa'ls per comes: "R3055, R3070".
 - 'dies_permesos'      text   → dies de la setmana en què es pot fabricar.
                                  Format preferent: "Dll-Dm-Dc" (Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge).
                                  Si l'usuari dicta noms complets, accepta també "Dimecres-Dijous-Divendres".
@@ -336,8 +395,11 @@ Camps i FORMATS:
 - 'comentaris'              text
 
 Regles RECEPTA:
-- Si el producte té MÚLTIPLES farcits (codis_farcit diferents) → crea UNA FILA per cada codi_farcit amb els seus grams i merma específics.
-- 'codi_massa' i les seves dades (grams_per_unit_massa, merma_massa) es repeteixen a cada fila si la massa és la mateixa per a totes.
+- Una fila representa una combinació (producte + codi_farcit + codi_massa).
+- Si el producte té MÚLTIPLES farcits → crea UNA FILA per cada codi_farcit amb els seus grams i merma específics.
+- Si el producte té MÚLTIPLES masses → crea UNA FILA per cada codi_massa amb els seus grams i merma específics.
+- Si té diverses masses I diversos farcits, crea una fila per cada combinació que l'usuari descrigui.
+- Repeteix el mateix 'codi_massa' a diverses files NOMÉS si totes comparteixen realment la mateixa massa.
 - Si dicta percentatges ("3 per cent", "24,8%"), DIVIDEIX per 100 i registra com a decimal.
 
 ═══════════════════════════════════════════
@@ -525,6 +587,7 @@ INSTRUCCIONS:
 - Si l'usuari canvia el codi_farcit, actualitza'l a productes i recepta, i genera les files de farcit corresponents (si les descriu).
 - Si NO canvia el codi_farcit, manté el mateix codi_farcit i NO tornis a duplicar files de farcit (retorna farcit:[] perquè es reutilitza el mateix R####).
 - Mateixa regla per a la massa: si l'usuari canvia el codi_massa, actualitza'l a productes i recepta i genera les files de masses si en descriu la composició. Si NO el canvia, retorna masses:[] perquè es reutilitza la mateixa M####.
+- Un producte pot tenir DIVERSES masses i DIVERSOS farcits: a recepta, cada fila és una combinació (producte + codi_farcit + codi_massa). Conserva totes les combinacions del base i afegeix-ne o modifica'n només les que l'usuari indiqui. A productes, els camps codi_massa i codi_farcit poden portar diversos codis separats per comes.
 - Els números segueixen les mateixes regles de format que als prompts de veu (decimals per merma, etc.).
 
 Retorna ÚNICAMENT: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...],"flux":[...]}
@@ -578,6 +641,33 @@ export default function App() {
   const sc = SCHEMAS[act];
   const isV = sc.voice;
   const pTabs = pend ? CASCADE.filter(t => pend[t]?.length > 0) : [];
+
+  // Codis que tenen fila però encara no tenen cap matèria primera registrada
+  const incompleteCodes = useCallback((table, codeField) => {
+    const byCode = new Map();
+    for (const r of data[table] || []) {
+      if (!r[codeField]) continue;
+      const k = normalizeStr(r[codeField]);
+      if (!byCode.has(k)) byCode.set(k, { code: r[codeField], hasMp: false });
+      if (r.codi_nom_mp) byCode.get(k).hasMp = true;
+    }
+    return [...byCode.values()].filter(v => !v.hasMp).map(v => v.code);
+  }, [data]);
+
+  const incompleteFarcit = incompleteCodes('farcit', 'codi_farcit');
+  const incompleteMasses = incompleteCodes('masses', 'codi_massa');
+
+  // Codis ja registrats a la BD que no tenen ni tan sols fila de composició
+  const missingRows = COMPOSITION_TABLES.map(spec => ({
+    spec, rows: missingCompositionRows(data, data, spec),
+  }));
+  const missingTotal = missingRows.reduce((s, m) => s + m.rows.length, 0);
+
+  // Qualsevol codi pendent, tingui fila buida o cap fila, per marcar-lo a recepta
+  const incompleteSet = new Set([
+    ...incompleteFarcit, ...incompleteMasses,
+    ...missingRows.flatMap(({ spec, rows }) => rows.map(r => r[spec.codeField])),
+  ].map(normalizeStr));
 
   useEffect(() => { if (ec && eRef.current) { eRef.current.focus(); eRef.current.select(); } }, [ec]);
   useEffect(() => { txtRef.current = txt; }, [txt]);
@@ -766,7 +856,8 @@ export default function App() {
         linies:    res3.linies    || [],
       };
 
-      const { resolved, changeLog: changes } = resolveCanonicalNames(parsed, data);
+      const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, data);
+      const { resolved, added } = ensureCompositionStubs(named, data);
 
       const total = CASCADE.reduce((s, t) => s + (resolved[t]?.length || 0), 0);
       if (!total) {
@@ -778,7 +869,8 @@ export default function App() {
         const summary = CASCADE.filter(t => resolved[t]?.length > 0)
           .map(t => `${SCHEMAS[t].icon} ${SCHEMAS[t].label}: ${resolved[t].length}`)
           .join("  ·  ");
-        setStat(`✅ ${summary}  — Revisa i confirma.`);
+        const stubTxt = added ? `  ·  ⚠️ ${added} codis pendents de composició` : "";
+        setStat(`✅ ${summary}${stubTxt}  — Revisa i confirma.`);
       }
     } catch (err) {
       console.error(err);
@@ -870,12 +962,13 @@ export default function App() {
 
     // Recopilar tot el producte base sense metadades
     const stripMeta = r => { const c = { ...r }; delete c.id; delete c.created_at; return c; };
-    const codisFarcit = [...new Set(
-      data.recepta.filter(r => r.producte === dupSrc).map(r => r.codi_farcit).filter(Boolean)
-    )];
-    const codisMassa = [...new Set(
-      data.recepta.filter(r => r.producte === dupSrc).map(r => r.codi_massa).filter(Boolean)
-    )];
+    // Els codis poden venir de recepta o de productes, i aquest darrer pot portar-ne diversos
+    const codisDe = field => [...new Set([
+      ...data.recepta.filter(r => r.producte === dupSrc).flatMap(r => splitCodes(r[field])),
+      ...data.productes.filter(r => r.producte === dupSrc).flatMap(r => splitCodes(r[field])),
+    ])];
+    const codisFarcit = codisDe('codi_farcit');
+    const codisMassa = codisDe('codi_massa');
     const baseJSON = {
       productes: data.productes.filter(r => r.producte === dupSrc)
         .map(r => { const c = stripMeta(r); delete c.transcripcio; return c; }),
@@ -905,11 +998,13 @@ export default function App() {
         linies:  [],
       };
 
-      const { resolved, changeLog: changes } = resolveCanonicalNames(parsed, data);
+      const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, data);
+      const { resolved, added } = ensureCompositionStubs(named, data);
       setPend(resolved);
       setChangeLog(changes);
       setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
-      setStat(`✅ Variant "${newCode}" preparada — Revisa i confirma.`);
+      const stubTxt = added ? `  ·  ⚠️ ${added} codis pendents de composició` : "";
+      setStat(`✅ Variant "${newCode}" preparada${stubTxt} — Revisa i confirma.`);
       setDupSrc(null); setDupNewCode(""); setDupText("");
     } catch (err) {
       console.error(err);
@@ -918,6 +1013,20 @@ export default function App() {
       setDupProcessing(false);
     }
   }, [dupSrc, dupNewCode, dupText, data, callAI]);
+
+  /* ─── Crear les files de composició que falten per a les dades ja registrades ─── */
+  const backfillCompositions = useCallback(async () => {
+    setStat("⏳ Creant les files de composició que falten...");
+    const done = [];
+    for (const { spec, rows } of missingRows) {
+      if (!rows.length) continue;
+      const inserted = await insertRows(spec.table, rows);
+      done.push(`${SCHEMAS[spec.table].icon} ${SCHEMAS[spec.table].label}: ${inserted.length}`);
+    }
+    setStat(done.length
+      ? `✅ Files creades — ${done.join("  ·  ")}. Omple-les amb les matèries primeres.`
+      : "✅ Tots els codis ja tenen fila de composició.");
+  }, [missingRows, insertRows]);
 
   /* ─── Export ─── */
   const exportJSON = () => {
@@ -1213,6 +1322,37 @@ export default function App() {
           </div>
         )}
 
+        {/* ═══ AVÍS DE COMPOSICIONS PENDENTS (farcit i massa) ═══ */}
+        {["farcit", "masses", "recepta"].includes(act) && (() => {
+          const empty = [...incompleteFarcit, ...incompleteMasses];
+          if (!empty.length && !missingTotal) return null;
+          return (
+            <div style={{ padding: "8px 24px", borderBottom: `1px solid ${C.o}`, background: C.oD, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {missingTotal > 0 && (
+                  <div style={{ fontSize: 11, color: C.o, fontWeight: 600 }}>
+                    ⚠️ {missingTotal} {missingTotal === 1 ? "codi referenciat sense fila" : "codis referenciats sense fila"}
+                    {missingRows.filter(m => m.rows.length).map(({ spec, rows }) =>
+                      ` · ${SCHEMAS[spec.table].label}: ${rows.map(r => r[spec.codeField]).sort().join(", ")}`
+                    ).join("")}
+                  </div>
+                )}
+                {empty.length > 0 && (
+                  <div style={{ fontSize: 11, color: C.t2, lineHeight: 1.6, marginTop: missingTotal ? 3 : 0 }}>
+                    Amb fila però sense matèries primeres ({empty.length}): {empty.sort().join(", ")}
+                  </div>
+                )}
+              </div>
+              {missingTotal > 0 && (
+                <Btn onClick={backfillCompositions}
+                  style={{ padding: "6px 14px", background: C.o, border: "none", color: C.bg, fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                  Crear les {missingTotal} files
+                </Btn>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ═══ DATA TABLE ═══ */}
         <div style={{ flex: 1, padding: "16px 24px", overflowX: "auto", overflowY: "auto" }}>
           {(() => {
@@ -1294,6 +1434,10 @@ export default function App() {
                           {visibleFields.map(f => {
                             const isEd = ec?.ri === idx && ec?.key === f.key;
                             const isText = f.type !== "number" && !f.options;
+                            // A recepta, avisa si el codi referenciat encara no té composició
+                            const codesPending = act === "recepta"
+                              && (f.key === "codi_farcit" || f.key === "codi_massa")
+                              && splitCodes(row[f.key]).filter(c => incompleteSet.has(normalizeStr(c)));
                             return (
                               <td key={f.key} onClick={() => !isEd && startEdit(idx, f.key, row[f.key])}
                                 style={{
@@ -1314,10 +1458,19 @@ export default function App() {
                                       style={ceS} />
                                   )
                                 ) : (
-                                  <span title={isText && row[f.key] ? String(row[f.key]) : undefined}
-                                    style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
-                                    {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
-                                  </span>
+                                  <>
+                                    <span title={isText && row[f.key] ? String(row[f.key]) : undefined}
+                                      style={{ color: row[f.key] != null && row[f.key] !== "" ? C.t1 : C.t3 }}>
+                                      {row[f.key] != null && row[f.key] !== "" ? String(row[f.key]) : "—"}
+                                    </span>
+                                    {codesPending && codesPending.length > 0 && (
+                                      <span
+                                        title={`Sense composició registrada: ${codesPending.join(", ")}`}
+                                        style={{ marginLeft: 5, color: C.o, fontSize: 11 }}>
+                                        ⚠️
+                                      </span>
+                                    )}
+                                  </>
                                 )}
                               </td>
                             );
