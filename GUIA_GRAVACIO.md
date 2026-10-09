@@ -206,6 +206,9 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 4. En confirmar, les files es desen a la BBDD. **Si tornes a gravar més info del mateix producte, només s'omplen els camps que estaven buits — no s'esborra res del que ja hi ha.**
 5. Tot codi de farcit o massa que esmentis tindrà **sempre una fila** a la seva taula, encara que no n'hagis descrit la composició. Aquests codis pendents apareixen marcats amb ⚠️ a les pestanyes **Farcit**, **Masses** i **Recepta**, perquè sàpigues què queda per completar.
 6. Igualment, tot recurs que aparegui al flux tindrà **sempre una fila** a la pestanya **Recursos**, amb quantitat 1 per defecte. Si en falta cap (per exemple de gravacions antigues), la pestanya mostra un avís amb un botó per crear-los de cop.
+7. La **transcripció es guarda** amb el producte. Si l'extracció no ha sortit bé, prem **Refer** a la pestanya Productes: podràs corregir el text (o afegir-hi coses dictant) i es tornarà a extreure tot des de zero. Això sí que **esborra i reescriu** el producte, la seva recepta i el seu flux, al contrari que tornar a gravar, que només omple buits.
+
+> ⚠️ **Refer** no toca Farcit, Masses ni Recursos, que són catàlegs compartits amb altres productes. Si hi queda algun codi buit que ja no fa servir ningú, les pestanyes Farcit i Masses mostren un avís per esborrar-lo.
 
 ---
 
@@ -213,6 +216,7 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
 
 - ❌ Dictar **percentatges** sense aclarir-ho. (Dius *«tres»* i no se sap si és 3 o 3%.) → Diu sempre *«tres per cent»* o *«zero coma zero tres»*.
 - ❌ Saltar-se el **dia del cicle**. → Comença cada bloc amb *«Dia 1»*, *«Dia 2»*.
-- ❌ No mencionar el **codi de la matèria** del pas. → Diu sempre *«amb M2001»*, *«del farcit R3055»* per lligar els passos a la recepta.
+- ❌ No mencionar el **codi de la matèria** del pas. → Diu sempre *«amb la M2001»*, *«del farcit R3055»* per lligar els passos a la recepta.
+- ❌ Parlar de *«la massa»* sense dir-ne mai el **codi**. → Si no el dictes, el camp queda buit. Diu *«la massa és la M####»* una vegada com a mínim.
 - ❌ Tractar la **neteja com a recurs nou**. → Diu *«neteja de l'olla mediana»*, no *«recurs nou: limpieza olla mediana»*.
 - ❌ Oblidar el **pas final** (envasat/paletització). → Inclou'l sempre.

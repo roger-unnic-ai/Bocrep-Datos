@@ -106,6 +106,10 @@ const SCHEMAS = {
 
 const CASCADE = ["productes", "recepta", "farcit", "masses", "linies", "flux"];
 
+// Taules amb una columna 'producte': són les que pertanyen a UN producte i es poden refer.
+// farcit, masses i linies no hi són perquè són catàlegs compartits entre productes.
+const PER_PRODUCT_TABLES = ["productes", "recepta", "flux"];
+
 /* ══════════════════════════════════════════════════════════════
    ENTITY RESOLUTION — normalitza noms proposats contra la BD
    ══════════════════════════════════════════════════════════════ */
@@ -359,6 +363,23 @@ function missingResourceRows(dbData) {
 
 // Tot codi de farcit/massa referenciat ha de tenir com a mínim una fila a la seva taula
 // de composició, perquè no quedi orfe i invisible.
+// Files de composició que han quedat orfes: cap producte ni recepta referencia el seu codi i
+// no tenen cap dada a dins. Són residus d'una extracció errònia (un codi que la IA va inventar),
+// no catàleg reutilitzable: per això només compten les que estan buides.
+function orphanCompositionRows(dbData, { table, codeField }) {
+  const referenced = new Set()
+  for (const t of ['recepta', 'productes'])
+    for (const r of dbData[t] || [])
+      for (const code of splitCodes(r[codeField])) referenced.add(normalizeStr(code))
+
+  return (dbData[table] || []).filter(r =>
+    r[codeField]
+    && !referenced.has(normalizeStr(r[codeField]))
+    && !r.codi_nom_mp
+    && r.kg_per_palet == null
+  )
+}
+
 function ensureCompositionStubs(resolved, dbData) {
   const out = { ...resolved }
   let added = 0
@@ -381,6 +402,12 @@ function ensureCompositionStubs(resolved, dbData) {
    Context: sistema d'optimització de producció industrial
    ══════════════════════════════════════════════════════════════ */
 
+// Els exemples dels prompts porten codis en forma de patró per evitar que la IA els copiï
+// a la sortida quan l'usuari no n'ha dictat cap (abans inventava el codi de l'exemple).
+const PLACEHOLDER_RULE = `- PATRONS, NO VALORS: "########", "M####", "R####" i "Màquina #" indiquen NOMÉS el format que
+  tenen aquests codis. No són valors reals i no els has de copiar MAI a la sortida. Fes servir
+  únicament els codis que l'usuari ha dictat; si per a un camp no n'ha dictat cap → null.`;
+
 const PROMPT_PROD_RECEPTA = `Ets un assistent expert en producció alimentària industrial. Treballes per a un sistema d'OPTIMITZACIÓ DE LA PRODUCCIÓ que, a partir de les receptes i els recursos disponibles, optimitza l'ús del personal i les màquines per maximitzar l'eficiència productiva.
 
 L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les dades per a QUATRE TAULES:
@@ -389,17 +416,17 @@ L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les 
 1. PRODUCTES (1 fila per producte):
 ═══════════════════════════════════════════
 Camps i FORMATS exactes:
-- 'producte'           text   → codi o identificador del producte (ex: "24155536")
-- 'grup'               text   → nom comercial/descriptiu (ex: "Crepes Salados 110gr")
-- 'unitats_per_palet'  number → ex: 4420
-- 'caixes_per_palet'   number → ex: 221
+- 'producte'           text   → codi o identificador del producte, format ########
+- 'grup'               text   → nom comercial/descriptiu (ex: "Crepes Salados 110gr", "Rolls Pollastre 90gr")
+- 'unitats_per_palet'  number → ex: 3600
+- 'caixes_per_palet'   number → ex: 180
 - 'unitats_per_caixa'  number → ex: 20
 - 'kg_massa_palet'     number → kg de massa per palet (ex: 335.01)
-- 'codi_massa'         text   → codi(s) de la massa, format M#### (ex: "M0002").
-                                 Si el producte té VÀRIES masses, separa-les per comes: "M0002, M0007".
+- 'codi_massa'         text   → codi(s) de la massa, format M####.
+                                 Si el producte té VÀRIES masses, separa-les per comes: "M####, M####".
 - 'kg_farcit_palet'    number → kg de farcit per palet (ex: 328.01)
-- 'codi_farcit'        text   → codi(s) del farcit, format R#### (ex: "R3055").
-                                 Si en té VARIS, separa'ls per comes: "R3055, R3070".
+- 'codi_farcit'        text   → codi(s) del farcit, format R####.
+                                 Si en té VARIS, separa'ls per comes: "R####, R####".
 - 'dies_permesos'      text   → dies de la setmana en què es pot fabricar.
                                  Format preferent: "Dll-Dm-Dc" (Dll=Dilluns, Dm=Dimarts, Dc=Dimecres, Dj=Dijous, Dv=Divendres, Ds=Dissabte, Dg=Diumenge).
                                  Si l'usuari dicta noms complets, accepta també "Dimecres-Dijous-Divendres".
@@ -411,11 +438,11 @@ Camps i FORMATS exactes:
 2. RECEPTA (1 fila per ingredient de farcit del producte):
 ═══════════════════════════════════════════
 Camps i FORMATS:
-- 'producte'                text   → MATEIX codi de producte que a PRODUCTES (ex: "24155536")
-- 'codi_farcit'             text   → R#### (ex: "R3055")
+- 'producte'                text   → MATEIX codi de producte que a PRODUCTES
+- 'codi_farcit'             text   → R####
 - 'grams_per_unitat_farcit' number → grams de farcit per unitat final (ex: 72)
 - 'merma_farcit'            number → DECIMAL entre 0 i 1 (ex: 0.01 = 1%, 0.248 = 24.8%). MAI percentatge sencer.
-- 'codi_massa'              text   → M#### (ex: "M0002")
+- 'codi_massa'              text   → M####
 - 'grams_per_unit_massa'    number → grams de massa per unitat final (ex: 40)
 - 'merma_massa'             number → DECIMAL entre 0 i 1 (ex: 0.248 = 24.8%)
 - 'comentaris'              text
@@ -427,67 +454,77 @@ Regles RECEPTA:
 - Si té diverses masses I diversos farcits, crea una fila per cada combinació que l'usuari descrigui.
 - Repeteix el mateix 'codi_massa' a diverses files NOMÉS si totes comparteixen realment la mateixa massa.
 - Si dicta percentatges ("3 per cent", "24,8%"), DIVIDEIX per 100 i registra com a decimal.
+- Si l'usuari parla de "la massa" o "el farcit" però NO en dicta el codi → deixa el camp a null.
+  No te l'inventis ni el copiïs dels exemples d'aquest prompt.
 
 ═══════════════════════════════════════════
 3. FARCIT (1 fila per matèria primera dins un codi_farcit):
 ═══════════════════════════════════════════
 Camps i FORMATS:
-- 'codi_farcit'   text   → R#### a què pertany la matèria primera (ex: "R3055")
-- 'codi_nom_mp'   text   → codi M#### o nom de la matèria primera (ex: "M2001", "Ricotta")
+- 'codi_farcit'   text   → R#### a què pertany la matèria primera
+- 'codi_nom_mp'   text   → codi M#### o nom de la matèria primera (ex: "Ricotta", "Gambes")
 - 'kg_per_palet'  number → kg d'aquesta matèria primera per palet de producte (ex: 142.03)
 - 'merma'         number → DECIMAL entre 0 i 1 (ex: 0.03 = 3%, 0.65 = 65%)
 
 Regles FARCIT:
-- Un codi_farcit (ex: R3055) està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
-- Exemple R3055: M2001 (142.03 kg, 0.03), M3006 (228.67 kg, 0.65), M4007 (34.23 kg, 0.08), M1010 (23.62 kg, 0), Ricotta (49.2 kg, 0).
+- Un codi_farcit està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
+  Un mateix R#### pot tenir-ne 5 o 6, cada una amb els seus kg i la seva merma; unes identificades
+  per codi M#### i d'altres pel seu nom.
+- ATENCIÓ al doble ús del format M####: un M#### pot ser una MASSA o una MATÈRIA PRIMERA. El que ho
+  distingeix és el paper que fa a la frase, no el format. Si l'usuari diu que un M#### és un
+  INGREDIENT del farcit i en dóna els kg (ex: "les gambes, que són la M####, en necessitarem 42 kg"),
+  va aquí com a 'codi_nom_mp' amb el seu 'codi_farcit', NO com a codi_massa.
+- Recull aquestes matèries primeres encara que l'usuari les mencioni enmig de la descripció del
+  procés (descongelar, preparar, escórrer) i no en una llista de composició ordenada.
 
 ═══════════════════════════════════════════
 4. MASSES (1 fila per matèria primera dins un codi_massa):
 ═══════════════════════════════════════════
 Camps i FORMATS:
-- 'codi_massa'    text   → M#### a què pertany la matèria primera (ex: "M0002")
-- 'codi_nom_mp'   text   → codi o nom de la matèria primera (ex: "M1001", "Farina")
+- 'codi_massa'    text   → M#### a què pertany la matèria primera
+- 'codi_nom_mp'   text   → codi M#### o nom de la matèria primera (ex: "Farina")
 - 'kg_per_palet'  number → kg d'aquesta matèria primera per palet de producte
 - 'merma'         number → DECIMAL entre 0 i 1 (ex: 0.03 = 3%)
 
 Regles MASSES:
-- Un codi_massa (ex: M0002) està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
+- Un codi_massa està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
 - Mateixa lògica que FARCIT però per a la massa en lloc del farcit.
 - Si l'usuari no descriu la composició de la massa → retorna masses:[].
 
 ═══════════════════════════════════════════
-EXEMPLE COMPLET (producte 24155536, "Crepes Salados 110gr"):
+EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
 ═══════════════════════════════════════════
 {
   "productes": [{
-    "producte": "24155536", "grup": "Crepes Salados 110gr",
-    "unitats_per_palet": 4420, "caixes_per_palet": 221, "unitats_per_caixa": 20,
-    "kg_massa_palet": 335.01, "codi_massa": "M0002",
-    "kg_farcit_palet": 328.01, "codi_farcit": "R3055",
+    "producte": "########", "grup": "Crepes Salados 110gr",
+    "unitats_per_palet": 3600, "caixes_per_palet": 180, "unitats_per_caixa": 20,
+    "kg_massa_palet": 335.01, "codi_massa": "M####",
+    "kg_farcit_palet": 328.01, "codi_farcit": "R####",
     "dies_permesos": "Dc-Dj-Dv",
     "incompatible_amb": "No es poden fabricar altres crepes salats ni rolls.",
     "comentaris": null
   }],
   "recepta": [{
-    "producte": "24155536", "codi_farcit": "R3055",
+    "producte": "########", "codi_farcit": "R####",
     "grams_per_unitat_farcit": 72, "merma_farcit": 0.01,
-    "codi_massa": "M0002", "grams_per_unit_massa": 40, "merma_massa": 0.248,
+    "codi_massa": "M####", "grams_per_unit_massa": 40, "merma_massa": 0.248,
     "comentaris": null
   }],
   "farcit": [
-    { "codi_farcit": "R3055", "codi_nom_mp": "M2001",   "kg_per_palet": 142.03, "merma": 0.03 },
-    { "codi_farcit": "R3055", "codi_nom_mp": "M3006",   "kg_per_palet": 228.67, "merma": 0.65 },
-    { "codi_farcit": "R3055", "codi_nom_mp": "Ricotta", "kg_per_palet": 49.2,   "merma": 0 }
+    { "codi_farcit": "R####", "codi_nom_mp": "M####",         "kg_per_palet": 142.03, "merma": 0.03 },
+    { "codi_farcit": "R####", "codi_nom_mp": "<altre M####>", "kg_per_palet": 228.67, "merma": 0.65 },
+    { "codi_farcit": "R####", "codi_nom_mp": "Ricotta",       "kg_per_palet": 49.2,   "merma": 0 }
   ],
   "masses": [
-    { "codi_massa": "M0002", "codi_nom_mp": "M1001",  "kg_per_palet": 210.5, "merma": 0.02 },
-    { "codi_massa": "M0002", "codi_nom_mp": "Farina", "kg_per_palet": 98.3,  "merma": 0 }
+    { "codi_massa": "M####", "codi_nom_mp": "M####",  "kg_per_palet": 210.5, "merma": 0.02 },
+    { "codi_massa": "M####", "codi_nom_mp": "Farina", "kg_per_palet": 98.3,  "merma": 0 }
   ]
 }
 
 Productes ja existents al sistema (NO duplicar — fes servir EL MATEIX 'producte'): {{EXISTING_PRODUCTS}}
 
 REGLES ESTRICTES:
+${PLACEHOLDER_RULE}
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
 - Format exacte: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...]}
 - Claus exactes (case-sensitive, minúscules amb guions baixos). Converteix números parlats a xifres.
@@ -507,11 +544,11 @@ Recursos (màquines/zones/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
 ═══════════════════════════════════════════
 CAMPS I FORMATS:
 ═══════════════════════════════════════════
-- 'producte'             text   → MATEIX codi de producte a TOTES les files (ex: "24155536").
+- 'producte'             text   → MATEIX codi de producte a TOTES les files (format ########).
 - 'pas'                  number → índex seqüencial global del pas (1, 2, 3...). Cada pas té un número únic. Serveix per ordenar.
 - 'dia'                  number → dia real del cicle de producció (ex: 1, 2). El mateix dia agrupa múltiples passos. Si no es menciona, dedueix-lo de l'ordre lògic.
-- 'codi_intervinent'     text   → codi de la matèria principal del pas, format M#### o R#### (ex: "M2001", "R3055", "M0002").
-                                   Si el pas és una variant del mateix codi (neteja, subtasca), pots afegir sufix decimal: "M2001.1", "M3006.2".
+- 'codi_intervinent'     text   → codi de la matèria principal del pas, format M#### o R####.
+                                   Si el pas és una variant del mateix codi (neteja, subtasca), pots afegir sufix decimal: "M####.1", "M####.2".
                                    null si el pas no està lligat a una matèria/farcit concret (ex: "Preparació de carros", "Encaixat / Paletització").
 - 'linia'                text   → nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas (ex: "Olla mediana", "Freidora", "Turmix Grande / Balança").
                                    null si el pas no ocupa cap recurs físic concret (esperes, controls, administratiu).
@@ -520,20 +557,20 @@ CAMPS I FORMATS:
 - 'persones_necessaries' number → nombre de persones (ex: 1, 3, 0).
 - 'perfils_de_persona'   text   → tipus de personal (ex: "Cocinero", "Cocinero / Directa", "Encarregat / Indirecte / Directa", "Qualsevol").
 - 'es_pot_parar'         text   → "Sí" si el procés es pot interrompre, "No" si ha de ser continu.
-- 'prerequisits'         text   → TEXT LLIURE descrivint què ha d'estar acabat abans (ex: "Finalitzar M2001", "Aigua a 90 graus", "Mezcla R3055 acabada", "Producció acabada", "Línia neta i muntada"). null si no depèn de res.
-- 'comentaris'           text   → notes addicionals (ex: "Màxim 60 kg per container", "Batut: mínim 90 kg / màxim 300 kg", "Palet màxim de 221 caixes").
+- 'prerequisits'         text   → TEXT LLIURE descrivint què ha d'estar acabat abans (ex: "Finalitzar M####", "Aigua a 90 graus", "Mezcla R#### acabada", "Producció acabada", "Línia neta i muntada"). null si no depèn de res.
+- 'comentaris'           text   → notes addicionals (ex: "Màxim 60 kg per container", "Batut: mínim 90 kg / màxim 300 kg", "Palet màxim de 180 caixes").
 
 ═══════════════════════════════════════════
-EXEMPLE (extracte del flux real del producte 24155536):
+EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
 ═══════════════════════════════════════════
 {
   "flux": [
-    { "producte": "24155536", "pas": 1, "dia": 1, "codi_intervinent": "M2001",   "linia": "Olla mediana",                        "massa": 150, "temps_per_kg": "45 minuts / 150 kg",   "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null },
-    { "producte": "24155536", "pas": 2, "dia": 1, "codi_intervinent": "M2001.1", "linia": "Limpieza Olla mediana",               "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M2001",          "comentaris": null },
-    { "producte": "24155536", "pas": 3, "dia": 1, "codi_intervinent": "M2001.2", "linia": "Limpieza containers",                 "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M2001",          "comentaris": "Màxim 60 kg per container" },
-    { "producte": "24155536", "pas": 8, "dia": 1, "codi_intervinent": null,      "linia": "Preparació de carros",                "massa": null,"temps_per_kg": "40 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Qualsevol",               "es_pot_parar": "Sí", "prerequisits": null,                       "comentaris": "20 minuts per carro" },
-    { "producte": "24155536", "pas": 9, "dia": 2, "codi_intervinent": "R3055",   "linia": "Mezcla manual (remo)",                "massa": null,"temps_per_kg": "60 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "Sí", "prerequisits": "Afegir Ricotta",            "comentaris": "18 minuts per container" },
-    { "producte": "24155536", "pas": 13, "dia": 2, "codi_intervinent": null,     "linia": "Fabricat Producte / carros / tunel",  "massa": null,"temps_per_kg": "1400 unidades / hora",  "persones_necessaries": 3, "perfils_de_persona": "Encarregat / Indirecte / Directa", "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null }
+    { "producte": "########", "pas": 1, "dia": 1, "codi_intervinent": "M####",   "linia": "Olla mediana",                        "massa": 150, "temps_per_kg": "45 minuts / 150 kg",   "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null },
+    { "producte": "########", "pas": 2, "dia": 1, "codi_intervinent": "M####.1", "linia": "Limpieza Olla mediana",               "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": null },
+    { "producte": "########", "pas": 3, "dia": 1, "codi_intervinent": "M####.2", "linia": "Limpieza containers",                 "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": "Màxim 60 kg per container" },
+    { "producte": "########", "pas": 8, "dia": 1, "codi_intervinent": null,      "linia": "Preparació de carros",                "massa": null,"temps_per_kg": "40 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Qualsevol",               "es_pot_parar": "Sí", "prerequisits": null,                       "comentaris": "20 minuts per carro" },
+    { "producte": "########", "pas": 9, "dia": 2, "codi_intervinent": "R####",   "linia": "Mezcla manual (remo)",                "massa": null,"temps_per_kg": "60 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "Sí", "prerequisits": "Afegir Ricotta",            "comentaris": "18 minuts per container" },
+    { "producte": "########", "pas": 13, "dia": 2, "codi_intervinent": null,     "linia": "Fabricat Producte / carros / tunel",  "massa": null,"temps_per_kg": "1400 unidades / hora",  "persones_necessaries": 3, "perfils_de_persona": "Encarregat / Indirecte / Directa", "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null }
   ]
 }
 
@@ -541,8 +578,9 @@ EXEMPLE (extracte del flux real del producte 24155536):
 REGLES:
 ═══════════════════════════════════════════
 - MÚLTIPLES RECURSOS PARAL·LELS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas', 'dia' i 'codi_intervinent').
-- SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M2001 → M2001.1, M2001.2...). El 'pas' segueix sent un índex global únic.
+- SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M#### → M####.1, M####.2...). El 'pas' segueix sent un índex global únic.
 - Inclou SEMPRE un pas final que representi la sortida/producte acabat (ex: "Encaixat / Paletització").
+${PLACEHOLDER_RULE}
 - Retorna ÚNICAMENT: {"flux":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -559,13 +597,13 @@ Analitza els passos i identifica els RECURSOS NOUS que apareixen al flux i que N
 ═══════════════════════════════════════════
 CAMPS I FORMATS (NOMÉS els recursos nous):
 ═══════════════════════════════════════════
-- 'linia'            text   → nom exacte del recurs tal com apareix al flux (ex: "Olla mediana", "Olla grande", "Freidora", "Turmix Grande / Balança", "Máquina 4", "Detector Metalls").
+- 'linia'            text   → nom exacte del recurs tal com apareix al flux (ex: "Olla mediana", "Olla grande", "Freidora", "Turmix Grande / Balança", "Màquina #", "Detector Metalls").
 - 'tipus'            text   → categoria física: "màquina", "forn", "olla", "freidora", "turmix", "balança", "cambra", "zona", "container", "fogó", "rustidor", "abatidor"...
 - 'quantitat'        number → quantes unitats IDÈNTIQUES i intercanviables hi ha d'aquest recurs
                               (ex: 2 si hi ha dues olles medianes iguals que poden treballar en paral·lel).
                               Si no s'especifica, posa 1.
 - 'descripcio'       text   → descripció breu de què fa o per a què s'utilitza. null si no es pot deduir.
-- 'temps_preparacio' number → minuts de preparació/posada en marxa abans d'usar-lo (ex: 60 per "Preparación Máquina 4"). null si no s'especifica.
+- 'temps_preparacio' number → minuts de preparació/posada en marxa abans d'usar-lo (ex: 60 per "Preparació Màquina #"). null si no s'especifica.
 - 'temps_neteja'     number → minuts de neteja després d'usar-lo (ex: 15, 30, 180). null si no s'especifica.
 - 'temps_espera'     number → minuts d'espera fins poder tornar-lo a utilitzar (refredament, etc.). null si no s'especifica.
 - 'comentaris'       text   → notes (ex: "Capacitat 35 kg / hora", "Mínim 90 kg / màxim 300 kg").
@@ -574,7 +612,7 @@ CAMPS I FORMATS (NOMÉS els recursos nous):
 QUÈ ÉS UN RECURS (regles estrictes):
 ═══════════════════════════════════════════
 - Un RECURS és un element FÍSIC amb capacitat limitada: màquina, olla, forn, freidora, batedora, rustidor, container, zona de producció, equip. No es pot usar simultàniament per a més d'una tasca (o té un límit de capacitat).
-- Exemples VÀLIDS extrets d'un flux real: "Olla mediana", "Olla grande", "Freidora / Balanzas / Rustideros", "Fogón / Olla escaldar", "Turmix Grande / Balança", "Máquina 1", "Máquina 2", "Máquina 4", "Detector Metalls", "Encaixadora".
+- Exemples VÀLIDS pel que fa a la FORMA del nom: "Olla mediana", "Olla grande", "Freidora / Balanzas / Rustideros", "Fogón / Olla escaldar", "Turmix Grande / Balança", "Màquina #", "Detector Metalls", "Encaixadora".
 - NO SÓN RECURSOS (no els registres):
   · "Espera", "Magatzem", "Emmagatzematge", "Control" — només estats.
   · Tasques administratives, preparacions sense màquina concreta (ex: "Preparació de carros", "Preparació etiquetes") → 'linia' del pas serà null.
@@ -597,8 +635,10 @@ REGLES FINALS:
 - EXHAUSTIVITAT: recorre TOTES les files del flux i fes la llista dels valors DISTINTS de 'linia'.
   Cada valor que no sigui null, que no sigui una neteja i que no existeixi ja al sistema ha de
   generar una fila. No te'n deixis cap, encara que no aparegui als exemples d'aquest prompt.
-- Les variants numerades són recursos DIFERENTS: "Máquina 1", "Máquina 2" i "Máquina 4" són tres
-  recursos independents, no un de sol. El mateix per a "Olla mediana" i "Olla grande".
+- Les variants NUMERADES del mateix tipus de màquina són recursos DIFERENTS: dues "Màquina #" amb
+  números diferents són dos recursos independents, no un de sol. Registra exactament els números que
+  apareixen al flux i cap altre. El mateix per a les variants per mida ("Olla mediana" vs "Olla grande").
+${PLACEHOLDER_RULE}
 - Retorna ÚNICAMENT: {"linies":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -645,7 +685,7 @@ const Btn = ({ children, style, ...props }) => (
 );
 
 export default function App() {
-  const { data, loading, insertRows, mergeRow, updateCell, deleteRow: dbDelete, reload } = useDatabase();
+  const { data, loading, insertRows, mergeRow, updateCell, deleteRow: dbDelete, deleteWhere, reload } = useDatabase();
 
   const [act, setAct] = useState("productes");
   const [isRec, setIsRec] = useState(false);
@@ -667,6 +707,9 @@ export default function App() {
   const [dupText, setDupText] = useState("");
   const [dupIsRec, setDupIsRec] = useState(false);
   const [dupProcessing, setDupProcessing] = useState(false);
+  const [redoSrc, setRedoSrc] = useState(null);
+  const [redoText, setRedoText] = useState("");
+  const [redoIsRec, setRedoIsRec] = useState(false);
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
@@ -699,6 +742,18 @@ export default function App() {
 
   // Recursos usats al flux que encara no són al catàleg
   const missingResources = missingResourceRows(data);
+
+  // Codis de composició buits que ja no referencia ningú
+  const orphanRows = COMPOSITION_TABLES.map(spec => ({
+    spec, rows: orphanCompositionRows(data, spec),
+  }));
+  const orphanTotal = orphanRows.reduce((s, o) => s + o.rows.length, 0);
+
+  // Files que s'esborrarien en refer el producte seleccionat
+  const redoCounts = redoSrc
+    ? Object.fromEntries(PER_PRODUCT_TABLES.map(t =>
+        [t, (data[t] || []).filter(r => r.producte === redoSrc).length]))
+    : null;
 
   // Qualsevol codi pendent, tingui fila buida o cap fila, per marcar-lo a recepta
   const incompleteSet = new Set([
@@ -769,7 +824,11 @@ export default function App() {
   const dupTextRef = useRef("");
   useEffect(() => { dupTextRef.current = dupText; }, [dupText]);
 
-  const startDupRec = useCallback(() => {
+  const redoTextRef = useRef("");
+  useEffect(() => { redoTextRef.current = redoText; }, [redoText]);
+
+  // Dictat dins d'un modal: acumula sobre el text que ja hi havia i es reinicia sol en silencis
+  const startModalRec = useCallback((initialText, onText, setActive) => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setStat("⚠️ Usa Chrome per reconeixement de veu."); return; }
 
@@ -777,7 +836,7 @@ export default function App() {
     if (isRec) { isStoppingRef.current = true; rRef.current?.stop(); setIsRec(false); }
 
     isStoppingRef.current = false;
-    let acc = dupTextRef.current;
+    let acc = initialText;
 
     const makeR = () => {
       const r = new SR();
@@ -787,7 +846,7 @@ export default function App() {
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) acc += e.results[i][0].transcript + " ";
         }
-        setDupText(acc); dupTextRef.current = acc;
+        onText(acc);
       };
 
       r.onerror = e => {
@@ -796,13 +855,13 @@ export default function App() {
       };
 
       r.onend = () => {
-        if (isStoppingRef.current) { setDupIsRec(false); return; }
+        if (isStoppingRef.current) { setActive(false); return; }
         try {
           const newR = makeR();
           rRef.current = newR;
           newR.start();
         } catch {
-          setDupIsRec(false);
+          setActive(false);
         }
       };
       return r;
@@ -810,14 +869,28 @@ export default function App() {
 
     const r = makeR();
     rRef.current = r; r.start();
-    setDupIsRec(true);
+    setActive(true);
   }, [isRec]);
 
-  const stopDupRec = useCallback(() => {
+  const stopModalRec = useCallback(setActive => {
     isStoppingRef.current = true;
     rRef.current?.stop();
-    setDupIsRec(false);
+    setActive(false);
   }, []);
+
+  const startDupRec = useCallback(() => startModalRec(
+    dupTextRef.current,
+    t => { setDupText(t); dupTextRef.current = t; },
+    setDupIsRec,
+  ), [startModalRec]);
+  const stopDupRec = useCallback(() => stopModalRec(setDupIsRec), [stopModalRec]);
+
+  const startRedoRec = useCallback(() => startModalRec(
+    redoTextRef.current,
+    t => { setRedoText(t); redoTextRef.current = t; },
+    setRedoIsRec,
+  ), [startModalRec]);
+  const stopRedoRec = useCallback(() => stopModalRec(setRedoIsRec), [stopModalRec]);
 
   /* ─── callAI — crida genèrica a l'API d'Anthropic ─── */
   const callAI = useCallback(async (systemPrompt, userContent) => {
@@ -844,16 +917,19 @@ export default function App() {
   }, []);
 
   /* ─── AI Parse — pipeline de 3 crides sequencials ─── */
-  const parseVoice = useCallback(async () => {
-    const text = txt.trim();
+  // textOverride i dataOverride els fa servir el reprocessament: just després d'esborrar el
+  // producte, 'data' encara no s'ha re-renderitzat i cal treballar amb el snapshot ja filtrat.
+  const parseVoice = useCallback(async ({ textOverride, dataOverride } = {}) => {
+    const text = (textOverride ?? txt).trim();
     if (!text) { setStat("No hi ha text."); return; }
     const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
     if (!apiKey) { setStat("❌ Falta VITE_ANTHROPIC_API_KEY a les variables d'entorn."); return; }
 
+    const src = dataOverride || data;
     setParsing(true);
 
-    const existingProducts = data.productes.map(p => p.producte).filter(Boolean).join(", ") || "(cap)";
-    const existingResources = data.linies.filter(l => l.linia)
+    const existingProducts = src.productes.map(p => p.producte).filter(Boolean).join(", ") || "(cap)";
+    const existingResources = src.linies.filter(l => l.linia)
       .map(l => l.tipus ? `${l.linia} (${l.tipus})` : l.linia).join(", ") || "(cap)";
 
     try {
@@ -893,8 +969,8 @@ export default function App() {
         linies:    res3.linies    || [],
       };
 
-      const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, data);
-      const { resolved, added } = ensureCompositionStubs(named, data);
+      const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, src);
+      const { resolved, added } = ensureCompositionStubs(named, src);
 
       const total = CASCADE.reduce((s, t) => s + (resolved[t]?.length || 0), 0);
       if (!total) {
@@ -913,7 +989,7 @@ export default function App() {
       console.error(err);
       setStat(`❌ Error: ${err.message}`);
     } finally { setParsing(false); }
-  }, [txt, data.productes, data.linies]);
+  }, [txt, data]);
 
   /* ─── Confirm pending (save to DB) ─── */
   const confirmAll = useCallback(async () => {
@@ -1086,6 +1162,45 @@ export default function App() {
     setStat(`✅ ${inserted.length} recursos creats. Revisa'n el tipus i la quantitat.`);
   }, [missingResources, insertRows]);
 
+  /* ─── Esborrar els codis de composició orfes i buits ─── */
+  const cleanOrphans = useCallback(async () => {
+    setStat("⏳ Esborrant els codis orfes...");
+    let n = 0;
+    for (const { spec, rows } of orphanRows)
+      for (const row of rows) { await dbDelete(spec.table, row.id); n++; }
+    setStat(n ? `✅ ${n} ${n === 1 ? "codi orfe esborrat" : "codis orfes esborrats"}.` : "✅ No hi ha codis orfes.");
+  }, [orphanRows, dbDelete]);
+
+  /* ─── Refer un producte: esborrar-lo i tornar a processar la transcripció ─── */
+  const reprocessProduct = useCallback(async () => {
+    const code = redoSrc;
+    const text = redoText.trim();
+    if (!code || !text) return;
+
+    stopRedoRec();
+    setStat(`⏳ Esborrant ${code}...`);
+
+    // Snapshot sense el producte. parseVoice l'ha de veure com a NOU: si encara hi constés,
+    // el prompt diria "no duplicar" i les files es marcarien com a update (que no sobreescriu).
+    const src = { ...data };
+    for (const t of PER_PRODUCT_TABLES) src[t] = (data[t] || []).filter(r => r.producte !== code);
+
+    for (const t of PER_PRODUCT_TABLES) {
+      const { error } = await deleteWhere(t, 'producte', code);
+      if (error) {
+        // deleteWhere ja ha filtrat l'estat local: cal rellegir per no quedar desincronitzat
+        setStat(`❌ No s'ha pogut esborrar ${SCHEMAS[t].label}: ${error}`);
+        await reload();
+        return;
+      }
+    }
+
+    setRedoSrc(null);
+    // Deixa el text a la caixa principal: si la IA falla, la transcripció no es perd
+    setTxt(text); txtRef.current = text;
+    await parseVoice({ textOverride: text, dataOverride: src });
+  }, [redoSrc, redoText, data, deleteWhere, parseVoice, stopRedoRec, reload]);
+
   /* ─── Export ─── */
   const exportJSON = () => {
     const clean = {};
@@ -1184,7 +1299,8 @@ export default function App() {
             </p>
             {act === "productes" && (
               <p style={{ margin: "4px 0 0", fontSize: 10, color: C.t3 }}>
-                💡 Prem <strong style={{ color: C.o }}>Copiar</strong> sobre un producte per crear-ne una còpia modificada: dicta només les diferències i la IA aplica els canvis.
+                💡 <strong style={{ color: C.o }}>Copiar</strong> crea una variant del producte: dicta només les diferències i la IA aplica els canvis.
+                {" "}<strong style={{ color: C.ac }}>Refer</strong> esborra el producte, la seva recepta i el seu flux, i els torna a extreure de la transcripció (que pots corregir abans).
               </p>
             )}
           </div>
@@ -1207,7 +1323,7 @@ export default function App() {
               ) : (
                 <Btn onClick={stopRec} style={{ padding: "9px 22px", background: C.rD, border: `2px solid ${C.r}`, color: C.r, animation: "pulse 1.5s infinite" }}>⏹ Parar mic</Btn>
               )}
-              <Btn onClick={parseVoice} disabled={!txt.trim() || parsing}
+              <Btn onClick={() => parseVoice()} disabled={!txt.trim() || parsing}
                 style={{
                   padding: "9px 22px",
                   background: txt.trim() && !parsing ? C.acD : C.s2,
@@ -1411,6 +1527,24 @@ export default function App() {
           );
         })()}
 
+        {/* ═══ AVÍS DE CODIS ORFES (buits i sense ningú que els referenciï) ═══ */}
+        {["farcit", "masses"].includes(act) && orphanTotal > 0 && (
+          <div style={{ padding: "8px 24px", borderBottom: `1px solid ${C.r}`, background: C.rD, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: C.r, fontWeight: 600 }}>
+                🧹 {orphanTotal} {orphanTotal === 1 ? "codi orfe i buit" : "codis orfes i buits"} — cap producte ni recepta els referencia
+              </div>
+              <div style={{ fontSize: 11, color: C.t2, lineHeight: 1.6, marginTop: 3 }}>
+                {orphanRows.flatMap(({ spec, rows }) => rows.map(r => r[spec.codeField])).sort().join(", ")}
+              </div>
+            </div>
+            <Btn onClick={cleanOrphans}
+              style={{ padding: "6px 14px", background: C.r, border: "none", color: "#fff", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+              Esborrar-los
+            </Btn>
+          </div>
+        )}
+
         {/* ═══ AVÍS DE RECURSOS REFERENCIATS SENSE FILA ═══ */}
         {act === "linies" && missingResources.length > 0 && (
           <div style={{ padding: "8px 24px", borderBottom: `1px solid ${C.o}`, background: C.oD, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
@@ -1483,15 +1617,29 @@ export default function App() {
                           onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                           {hasTx && (
                             <td style={{ ...tdS, whiteSpace: "nowrap" }}>
-                              <Btn
-                                onClick={() => { setDupSrc(row.producte); setDupNewCode(""); setDupText(""); }}
-                                style={{
-                                  padding: "3px 9px", fontSize: 10,
-                                  background: C.oD, border: `1px solid ${C.o}`,
-                                  color: C.o, borderRadius: 4,
-                                }}>
-                                Copiar
-                              </Btn>
+                              <div style={{ display: "flex", gap: 5 }}>
+                                <Btn
+                                  onClick={() => { setDupSrc(row.producte); setDupNewCode(""); setDupText(""); }}
+                                  style={{
+                                    padding: "3px 9px", fontSize: 10,
+                                    background: C.oD, border: `1px solid ${C.o}`,
+                                    color: C.o, borderRadius: 4,
+                                  }}>
+                                  Copiar
+                                </Btn>
+                                {row.transcripcio && (
+                                  <Btn
+                                    onClick={() => { setRedoSrc(row.producte); setRedoText(row.transcripcio); }}
+                                    title="Esborrar aquest producte, la seva recepta i el seu flux, i tornar-ho a processar"
+                                    style={{
+                                      padding: "3px 9px", fontSize: 10,
+                                      background: C.acD, border: `1px solid ${C.ac}`,
+                                      color: C.ac, borderRadius: 4,
+                                    }}>
+                                    Refer
+                                  </Btn>
+                                )}
+                              </div>
                             </td>
                           )}
                           <td style={{ ...tdS, textAlign: "center", color: C.t3, fontSize: 10 }}>{ri + 1}</td>
@@ -1662,6 +1810,87 @@ export default function App() {
                   opacity: dupNewCode.trim() && !dupProcessing ? 1 : 0.5,
                 }}>
                 {dupProcessing ? "🤖 Processant..." : "✨ Crear variant"}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ MODAL: REFER UN PRODUCTE ═══ */}
+      {redoSrc && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+        }} onClick={() => { if (!parsing) { stopRedoRec(); setRedoSrc(null); } }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: C.s1, border: `1px solid ${C.b1}`, borderRadius: 8,
+            padding: 28, width: 560, boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>♻️ Refer el producte</div>
+            <div style={{ fontSize: 11, color: C.t3, marginBottom: 18 }}>
+              Producte: <span style={{ color: C.ac, fontWeight: 600 }}>{redoSrc}</span>
+            </div>
+
+            {/* Què s'esborra */}
+            <div style={{
+              padding: "10px 14px", marginBottom: 18, borderRadius: 6,
+              background: C.rD, border: `1px solid ${C.r}`,
+            }}>
+              <div style={{ fontSize: 11, color: C.r, fontWeight: 600, marginBottom: 4 }}>
+                S'esborraran aquestes files i es tornaran a crear des de zero:
+              </div>
+              <div style={{ fontSize: 11, color: C.t2, lineHeight: 1.7 }}>
+                {PER_PRODUCT_TABLES.map(t =>
+                  `${SCHEMAS[t].icon} ${SCHEMAS[t].label}: ${redoCounts?.[t] ?? 0}`).join("  ·  ")}
+              </div>
+              <div style={{ fontSize: 10, color: C.t3, marginTop: 5 }}>
+                Farcit, Masses i Recursos no es toquen: són catàlegs compartits amb altres productes.
+              </div>
+            </div>
+
+            {/* Transcripció editable */}
+            <div style={{ fontSize: 11, color: C.t2, marginBottom: 8 }}>
+              Transcripció{" "}
+              <span style={{ color: C.t3 }}>(corregeix-la o afegeix-hi el que faltava abans de refer)</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              {!redoIsRec ? (
+                <Btn onClick={startRedoRec} disabled={parsing}
+                  style={{ padding: "7px 14px", background: `linear-gradient(135deg, ${C.r}, #DC2626)`, border: "none", color: "#fff", fontSize: 11 }}>
+                  ⏺ Afegir dictant
+                </Btn>
+              ) : (
+                <Btn onClick={stopRedoRec}
+                  style={{ padding: "7px 14px", background: C.rD, border: `2px solid ${C.r}`, color: C.r, fontSize: 11, animation: "pulse 1.5s infinite" }}>
+                  ⏹ Parar
+                </Btn>
+              )}
+            </div>
+            <textarea
+              value={redoText}
+              onChange={e => setRedoText(e.target.value)}
+              disabled={parsing}
+              rows={10}
+              style={{ ...inpS, resize: "vertical", lineHeight: 1.6, marginBottom: 20 }}
+            />
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn onClick={() => { stopRedoRec(); setRedoSrc(null); setRedoText(""); }}
+                disabled={parsing}
+                style={{ padding: "8px 18px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 12 }}>
+                Cancel·lar
+              </Btn>
+              <Btn
+                disabled={!redoText.trim() || parsing}
+                onClick={reprocessProduct}
+                style={{
+                  padding: "8px 20px", fontSize: 12,
+                  background: redoText.trim() && !parsing ? C.r : C.s2,
+                  border: "none",
+                  color: redoText.trim() && !parsing ? "#fff" : C.t3,
+                  opacity: redoText.trim() && !parsing ? 1 : 0.5,
+                }}>
+                {parsing ? "🤖 Processant..." : "♻️ Esborrar i refer"}
               </Btn>
             </div>
           </div>

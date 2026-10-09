@@ -206,5 +206,30 @@ export function useDatabase() {
     }
   }, [])
 
-  return { data, loading, insertRows, mergeRow, updateCell, deleteRow, reload: loadAll }
+  // Delete every row of a table matching a field value, in a single request.
+  // El comptatge de files esborrades el fa qui crida, a partir de 'data'.
+  const deleteWhere = useCallback(async (tableKey, field, value) => {
+    setData(prev => {
+      const next = { ...prev, [tableKey]: prev[tableKey].filter(r => r[field] !== value) }
+      if (!supabase) {
+        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
+      }
+      return next
+    })
+
+    if (supabase) {
+      const { error } = await supabase
+        .from(TABLE_MAP[tableKey])
+        .delete()
+        .eq(field, value)
+
+      if (error) {
+        console.error(`Delete error (${tableKey}):`, error)
+        return { error: error.message || String(error) }
+      }
+    }
+    return { error: null }
+  }, [])
+
+  return { data, loading, insertRows, mergeRow, updateCell, deleteRow, deleteWhere, reload: loadAll }
 }
