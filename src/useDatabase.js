@@ -13,6 +13,27 @@ const TABLE_MAP = {
 
 // Fields that must never be sent to the DB
 const META_FIELDS = ['_id', 'id', 'created_at', '_action', '_existingId']
+
+// Camps que porten una LLISTA de codis separats per comes ("M0002, M0007"). En fusionar,
+// aquests no es poden tractar com la resta: un producte va sumant masses i farcits en
+// gravacions successives, i si només s'omplissin quan són buits la segona massa es perdria.
+const LIST_FIELDS = {
+  productes: ['codi_massa', 'codi_farcit'],
+}
+
+const splitList = v => String(v || '').split(/[,;]/).map(s => s.trim()).filter(Boolean)
+
+// Unió de dues llistes de codis, conservant l'ordre existent i afegint només els nous
+const mergeLists = (current, incoming) => {
+  const out = splitList(current)
+  const seen = new Set(out.map(c => c.toLowerCase()))
+  for (const c of splitList(incoming)) {
+    if (seen.has(c.toLowerCase())) continue
+    out.push(c)
+    seen.add(c.toLowerCase())
+  }
+  return out.join(', ')
+}
 const cleanRow = r => {
   const o = {}
   Object.entries(r).forEach(([k, v]) => {
@@ -130,7 +151,13 @@ export function useDatabase() {
       const cur = existing[k]
       const isEmpty = cur === null || cur === undefined || cur === ''
       const hasVal = v !== null && v !== undefined && v !== ''
-      if (isEmpty && hasVal) updates[k] = v
+      if (!hasVal) return
+      if (isEmpty) { updates[k] = v; return }
+      // Camp de llista ja amb contingut: acumula els codis nous en lloc de deixar-ho igual
+      if (LIST_FIELDS[tableKey]?.includes(k)) {
+        const union = mergeLists(cur, v)
+        if (union !== splitList(cur).join(', ')) updates[k] = union
+      }
     })
 
     if (!Object.keys(updates).length) return existing // nothing new to fill in
