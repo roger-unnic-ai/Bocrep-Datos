@@ -413,6 +413,28 @@ const PROMPT_PROD_RECEPTA = `Ets un assistent expert en producció alimentària 
 L'usuari dicta informació sobre UN PRODUCTE en català o castellà. Extreu les dades per a QUATRE TAULES:
 
 ═══════════════════════════════════════════
+COM S'ESTRUCTUREN AQUESTES DADES (llegeix-ho abans de res):
+═══════════════════════════════════════════
+Un producte es fa amb una MASSA (l'oblea, el crep, la base) i un FARCIT (el farciment):
+- El FARCIT té codi R#### i està COMPOST per diverses matèries primeres, cada una amb els seus kg.
+- Aquestes matèries primeres normalment tenen codi M####, però també poden ser un nom ("Ricotta").
+- La MASSA té codi M#### i també pot estar composta per matèries primeres.
+
+Per tant el format M#### és AMBIGU: pot ser la massa del producte O un ingredient. Com distingir-ho:
+si el que es dicta és que aquest M#### ENTRA DINS d'un R#### (és un component de la mescla, de la
+crema, del farcit), aleshores és una MATÈRIA PRIMERA, va a la taula FARCIT, i NO al camp codi_massa.
+
+Exemple del tipus de frase que dicta l'usuari:
+  "necessitarem una M#### que seran 163,57 kg. La mescla final, que és la R####, seran 203,67 kg.
+   I l'encolant, que és una altra M####, en necessitarem 21,01 kg."
+  → La R#### és el farcit del producte: codi_farcit = R####, kg_farcit_palet = 203.67
+  → Les DUES M#### són matèries primeres d'aquesta R####: DUES files a la taula FARCIT,
+    amb kg_per_palet 163.57 i 21.01 respectivament.
+  → codi_massa i kg_massa_palet queden a null: de la massa (l'oblea) no n'ha dit ni el codi ni els kg.
+Si descartes una d'aquestes M#### perquè "no hi cap" en cap camp, l'extracció és INCORRECTA:
+tot codi que l'usuari pronuncia ha d'acabar en alguna de les quatre taules.
+
+═══════════════════════════════════════════
 1. PRODUCTES (1 fila per producte):
 ═══════════════════════════════════════════
 Camps i FORMATS exactes:
@@ -421,8 +443,11 @@ Camps i FORMATS exactes:
 - 'unitats_per_palet'  number → ex: 3600
 - 'caixes_per_palet'   number → ex: 180
 - 'unitats_per_caixa'  number → ex: 20
-- 'kg_massa_palet'     number → kg de massa per palet (ex: 335.01)
-- 'codi_massa'         text   → codi(s) de la massa, format M####.
+- 'kg_massa_palet'     number → kg de la MASSA (oblea/base) per palet (ex: 335.01).
+                                 NO hi posis els kg d'un ingredient del farcit.
+- 'codi_massa'         text   → codi(s) de la massa, format M####. NOMÉS si es dicta que aquest
+                                 M#### és la massa/base del producte. Si el M#### és un ingredient
+                                 que entra dins del farcit → va a la taula FARCIT i aquí null.
                                  Si el producte té VÀRIES masses, separa-les per comes: "M####, M####".
 - 'kg_farcit_palet'    number → kg de farcit per palet (ex: 328.01)
 - 'codi_farcit'        text   → codi(s) del farcit, format R####.
@@ -435,7 +460,7 @@ Camps i FORMATS exactes:
 - 'comentaris'         text
 
 ═══════════════════════════════════════════
-2. RECEPTA (1 fila per ingredient de farcit del producte):
+2. RECEPTA (1 fila per combinació de producte + farcit + massa):
 ═══════════════════════════════════════════
 Camps i FORMATS:
 - 'producte'                text   → MATEIX codi de producte que a PRODUCTES
@@ -467,15 +492,21 @@ Camps i FORMATS:
 - 'merma'         number → DECIMAL entre 0 i 1 (ex: 0.03 = 3%, 0.65 = 65%)
 
 Regles FARCIT:
-- Un codi_farcit està compost per VÀRIES matèries primeres → crea UNA FILA per cada matèria primera.
-  Un mateix R#### pot tenir-ne 5 o 6, cada una amb els seus kg i la seva merma; unes identificades
-  per codi M#### i d'altres pel seu nom.
+- Un codi_farcit està compost per matèries primeres → crea UNA FILA per cada matèria primera.
+  Pot tenir-ne 2 o pot tenir-ne 10: registra les que es dictin i no esperis una llista completa.
+  Unes van identificades per codi M#### i d'altres pel seu nom.
+- ELS KG: el número de kg que es diu al costat de cada matèria primera és el seu 'kg_per_palet'.
+  No el confonguis amb els kg TOTALS del farcit, que van a 'kg_farcit_palet' de PRODUCTES.
 - ATENCIÓ al doble ús del format M####: un M#### pot ser una MASSA o una MATÈRIA PRIMERA. El que ho
   distingeix és el paper que fa a la frase, no el format. Si l'usuari diu que un M#### és un
   INGREDIENT del farcit i en dóna els kg (ex: "les gambes, que són la M####, en necessitarem 42 kg"),
   va aquí com a 'codi_nom_mp' amb el seu 'codi_farcit', NO com a codi_massa.
 - Recull aquestes matèries primeres encara que l'usuari les mencioni enmig de la descripció del
-  procés (descongelar, preparar, escórrer) i no en una llista de composició ordenada.
+  procés (descongelar, preparar, escórrer, batre) i no en una llista de composició ordenada.
+- Una matèria primera pot ser una PREPARACIÓ INTERMÈDIA amb el seu propi procés de cuina
+  (una crema, un saltat, un descongelat). Que tingui passos propis al flux no la treu d'aquí:
+  segueix sent una fila de FARCIT amb els seus kg.
+- NO retornis farcit:[] si s'ha dictat algun M#### o algun ingredient que entri dins d'un R####.
 
 ═══════════════════════════════════════════
 4. MASSES (1 fila per matèria primera dins un codi_massa):
@@ -524,6 +555,10 @@ EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
 Productes ja existents al sistema (NO duplicar — fes servir EL MATEIX 'producte'): {{EXISTING_PRODUCTS}}
 
 REGLES ESTRICTES:
+- CAP CODI PERDUT: abans de respondre, repassa la transcripció i fes la llista de tots els codis
+  M#### i R#### que l'usuari ha pronunciat. Cada un ha d'aparèixer en alguna de les quatre taules
+  (com a codi_massa, codi_farcit, codi_nom_mp o codi d'una fila de composició). Si algun no hi
+  encaixa com a massa ni com a farcit, és una MATÈRIA PRIMERA: posa'l a FARCIT amb els seus kg.
 ${PLACEHOLDER_RULE}
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
 - Format exacte: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...]}
@@ -906,6 +941,9 @@ export default function App() {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5", max_tokens: 16000,
+        // Extracció de dades estructurades: sense aleatorietat, perquè la mateixa
+        // gravació doni sempre el mateix resultat (el valor per defecte de l'API és 1)
+        temperature: 0,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent || "Processa la informació del sistema." }],
       }),
