@@ -402,6 +402,18 @@ function ensureCompositionStubs(resolved, dbData) {
    Context: sistema d'optimització de producció industrial
    ══════════════════════════════════════════════════════════════ */
 
+/* ═══ Models ═══ */
+// La 1a crida ha de desambiguar si un M#### és la massa del producte o una matèria primera
+// del farcit: és la part de raonament sobre un domini ambigu, i va amb Opus. La resta, Sonnet.
+// (claude-sonnet-4-5 es retira el 30/11/2026; no es pot fer servir més enllà d'aquesta data.)
+const MODEL_REASONING = "claude-opus-5-5";
+const MODEL_DEFAULT = "claude-sonnet-5-5";
+
+// 'temperature' està deprecat als models 4.7+ i retorna 400 si s'hi passa un valor:
+// el determinisme s'ha de demanar per prompt.
+const DETERMINISM_RULE = `- SIGUES DETERMINISTA: extreu només el que es diu a la transcripció, sense variacions
+  creatives ni suposicions. La mateixa transcripció ha de donar sempre el mateix resultat.`;
+
 // Els exemples dels prompts porten codis en forma de patró per evitar que la IA els copiï
 // a la sortida quan l'usuari no n'ha dictat cap (abans inventava el codi de l'exemple).
 const PLACEHOLDER_RULE = `- PATRONS, NO VALORS: "########", "M####", "R####" i "Màquina #" indiquen NOMÉS el format que
@@ -560,6 +572,7 @@ REGLES ESTRICTES:
   (com a codi_massa, codi_farcit, codi_nom_mp o codi d'una fila de composició). Si algun no hi
   encaixa com a massa ni com a farcit, és una MATÈRIA PRIMERA: posa'l a FARCIT amb els seus kg.
 ${PLACEHOLDER_RULE}
+${DETERMINISM_RULE}
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
 - Format exacte: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...]}
 - Claus exactes (case-sensitive, minúscules amb guions baixos). Converteix números parlats a xifres.
@@ -616,6 +629,7 @@ REGLES:
 - SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M#### → M####.1, M####.2...). El 'pas' segueix sent un índex global únic.
 - Inclou SEMPRE un pas final que representi la sortida/producte acabat (ex: "Encaixat / Paletització").
 ${PLACEHOLDER_RULE}
+${DETERMINISM_RULE}
 - Retorna ÚNICAMENT: {"flux":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -674,6 +688,7 @@ REGLES FINALS:
   números diferents són dos recursos independents, no un de sol. Registra exactament els números que
   apareixen al flux i cap altre. El mateix per a les variants per mida ("Olla mediana" vs "Olla grande").
 ${PLACEHOLDER_RULE}
+${DETERMINISM_RULE}
 - Retorna ÚNICAMENT: {"linies":[...]}. Cap markdown, cap text extra.
 - VALORS NO MENCIONATS: numèrics → null. Textos → null. MAI "".
 - TIPUS ESTRICTES: numèrics → number o null. Textos → string o null.`;
@@ -928,7 +943,7 @@ export default function App() {
   const stopRedoRec = useCallback(() => stopModalRec(setRedoIsRec), [stopModalRec]);
 
   /* ─── callAI — crida genèrica a l'API d'Anthropic ─── */
-  const callAI = useCallback(async (systemPrompt, userContent) => {
+  const callAI = useCallback(async (systemPrompt, userContent, { model = MODEL_DEFAULT, maxTokens = 16000 } = {}) => {
     const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("Falta VITE_ANTHROPIC_API_KEY a les variables d'entorn.");
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
@@ -940,10 +955,7 @@ export default function App() {
         "anthropic-dangerous-direct-browser-access": "true",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5", max_tokens: 16000,
-        // Extracció de dades estructurades: sense aleatorietat, perquè la mateixa
-        // gravació doni sempre el mateix resultat (el valor per defecte de l'API és 1)
-        temperature: 0,
+        model, max_tokens: maxTokens,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent || "Processa la informació del sistema." }],
       }),
@@ -975,18 +987,21 @@ export default function App() {
       setStat("🤖 (1/3) Processant producte, recepta i farcit...");
       const res1 = await callAI(
         PROMPT_PROD_RECEPTA.replace("{{EXISTING_PRODUCTS}}", existingProducts),
-        text
+        text,
+        { model: MODEL_REASONING }
       );
 
       const proposedProducte = res1.productes?.[0]?.producte || "";
 
       // Crida 2: Flux
       setStat("🤖 (2/3) Processant flux de producció...");
+      // El flux és la sortida més llarga: més marge per no truncar-la (només es paga el que genera)
       const res2 = await callAI(
         PROMPT_FLUX
           .replace("{{EXISTING_RESOURCES}}", existingResources)
           .replace("{{PROPOSED_PRODUCTE}}", proposedProducte),
-        text
+        text,
+        { maxTokens: 32000 }
       );
 
       // Crida 3: Recursos / Línies
@@ -1142,7 +1157,8 @@ export default function App() {
         .replaceAll("{{NEW_CODE}}", newCode)
         .replace("{{USER_MODIFICATIONS}}", modText || "(sense modificacions — copia idèntic amb el nou codi)");
 
-      const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.");
+      // Duplicar també és raonament estructural (quins codis es reutilitzen i quins canvien)
+      const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.", { model: MODEL_REASONING });
 
       const parsed = {
         productes: (res.productes || []).map(p => ({
